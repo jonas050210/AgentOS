@@ -1,0 +1,321 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * AgentOS — Liquid Glass
+ * ----------------------
+ * A dark, layered surface system: an ambient aurora behind everything, then
+ * translucent panels with a lit top edge, soft reflections that travel on
+ * hover, and generous spacing. Every animation is decorative and can be turned
+ * off (settings.appearance.reduceMotion or the OS preference).
+ */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --glass-blur: 22px;
+    --glass-saturate: 145%;
+    --glass-opacity: 0.055;
+    --ambient-opacity: 1;
+  }
+  [data-glass='subtle'] {
+    --glass-opacity: 0.035;
+    --glass-blur: 14px;
+    --ambient-opacity: 0.6;
+  }
+  [data-glass='vivid'] {
+    --glass-opacity: 0.085;
+    --glass-blur: 30px;
+    --ambient-opacity: 1.3;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-base-950 text-slate-200 antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    letter-spacing: -0.011em;
+  }
+
+  /* Drifting aurora: three offset light sources, no images, no JS. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: -20%;
+    pointer-events: none;
+    z-index: 0;
+    opacity: var(--ambient-opacity);
+    background:
+      radial-gradient(42rem 32rem at 12% -6%, rgba(76, 141, 255, 0.22), transparent 62%),
+      radial-gradient(38rem 28rem at 96% 6%, rgba(122, 96, 255, 0.16), transparent 60%),
+      radial-gradient(36rem 30rem at 68% 108%, rgba(62, 207, 142, 0.12), transparent 62%);
+    animation: drift 38s ease-in-out infinite;
+  }
+  /* Fine grain keeps large gradients from banding on cheap panels. */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  }
+
+  ::selection {
+    @apply bg-accent-500/35;
+  }
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent-400/70 ring-offset-1 ring-offset-base-950;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-white/10;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-white/20;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Respect the OS preference and the explicit app setting. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+  /* Explicit "reduce motion" beats the OS preference; 'auto' is handled above. */
+  [data-motion='off'] *,
+  [data-motion='off'] *::before,
+  [data-motion='off'] *::after {
+    animation: none !important;
+    transition-duration: 120ms !important;
+  }
+  [data-glow='off'] body::before {
+    opacity: 0.35;
+  }
+}
+
+@layer components {
+  /* ---------- surfaces ---------- */
+  .glass {
+    background: linear-gradient(180deg, rgba(255, 255, 255, calc(var(--glass-opacity) + 0.02)) 0%, rgba(255, 255, 255, 0.012) 100%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.075),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 20px 50px -24px rgba(0, 0, 0, 0.8);
+    border-radius: 1.25rem;
+  }
+  .glass-panel {
+    @apply glass;
+  }
+  .glass-subtle {
+    background: rgba(255, 255, 255, 0.025);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    border-radius: 0.9rem;
+  }
+  .glass-raised {
+    @apply glass;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 32px 80px -32px rgba(0, 0, 0, 0.95);
+  }
+
+  /* Soft reflection that travels across a surface on hover. */
+  .reflective {
+    position: relative;
+    overflow: hidden;
+  }
+  .reflective::after {
+    content: '';
+    position: absolute;
+    top: -40%;
+    bottom: -40%;
+    width: 38%;
+    left: -60%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09), transparent);
+    transform: rotate(8deg);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .reflective:hover::after,
+  .reflective:focus-visible::after {
+    opacity: 1;
+    animation: sheen-move 900ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .lift {
+    transition:
+      transform 380ms cubic-bezier(0.16, 1, 0.3, 1),
+      box-shadow 380ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-color 300ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-3px);
+  }
+
+  .divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09) 22%, rgba(255, 255, 255, 0.09) 78%, transparent);
+  }
+
+  /* ---------- type ---------- */
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.2em] text-slate-500;
+  }
+  .display {
+    @apply text-[1.65rem] font-semibold leading-tight tracking-[-0.02em] text-white;
+  }
+  .display-lg {
+    @apply text-[2.1rem] font-semibold leading-[1.1] tracking-[-0.03em] text-white;
+  }
+  .muted {
+    @apply text-sm text-slate-400;
+  }
+  .mono {
+    @apply font-mono text-xs tabular-nums text-slate-300;
+  }
+
+  /* ---------- controls ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium transition-all duration-300 ease-glass disabled:cursor-not-allowed disabled:opacity-45;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  .btn-primary {
+    @apply btn text-white;
+    background: linear-gradient(180deg, #5d9bff 0%, #3f7be6 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 12px 30px -14px rgba(76, 141, 255, 0.9);
+  }
+  .btn-primary:hover {
+    background: linear-gradient(180deg, #6ea8ff 0%, #4c8dff 100%);
+    transform: translateY(-1px);
+  }
+  .btn-ghost {
+    @apply btn text-slate-300;
+    background: rgba(255, 255, 255, 0.03);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  .btn-ghost:hover {
+    @apply text-white;
+    background: rgba(255, 255, 255, 0.075);
+    transform: translateY(-1px);
+  }
+  .btn-quiet {
+    @apply btn text-slate-400;
+  }
+  .btn-quiet:hover {
+    @apply text-slate-100;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .btn-danger {
+    @apply btn text-signal-error;
+    background: rgba(242, 100, 90, 0.1);
+    box-shadow: inset 0 0 0 1px rgba(242, 100, 90, 0.3);
+  }
+  .btn-danger:hover {
+    background: rgba(242, 100, 90, 0.18);
+  }
+
+  .input {
+    @apply w-full rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 transition-colors duration-200;
+    background: rgba(6, 9, 16, 0.6);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.075);
+  }
+  .input:focus {
+    box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.6), 0 0 0 4px rgba(76, 141, 255, 0.12);
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wider text-slate-400;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-2xs font-medium text-slate-300;
+    background: rgba(255, 255, 255, 0.045);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+  .tile-hover {
+    @apply transition-all duration-300 ease-glass;
+  }
+  .tile-hover:hover {
+    background: rgba(255, 255, 255, 0.06);
+    transform: translateY(-2px);
+  }
+
+  /* ---------- navigation ---------- */
+  .nav-item {
+    @apply relative flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-400 transition-all duration-300 ease-glass;
+  }
+  .nav-item:hover {
+    @apply text-slate-100;
+    background: rgba(255, 255, 255, 0.045);
+    transform: translateX(2px);
+  }
+  .nav-item[aria-current='page'] {
+    @apply text-white;
+    background: linear-gradient(90deg, rgba(76, 141, 255, 0.22), rgba(76, 141, 255, 0.05) 70%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 1px rgba(110, 168, 255, 0.22);
+  }
+  .nav-rail {
+    @apply absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-full opacity-0 transition-opacity duration-300;
+    background: linear-gradient(180deg, #9ecbff, #4c8dff);
+    box-shadow: 0 0 12px rgba(110, 168, 255, 0.9);
+  }
+  .nav-item[aria-current='page'] .nav-rail {
+    opacity: 1;
+  }
+
+  /* ---------- loading ---------- */
+  .skeleton {
+    @apply rounded-lg;
+    background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.09) 50%, rgba(255, 255, 255, 0.03) 100%);
+    background-size: 220% 100%;
+    animation: shimmer 2.4s linear infinite;
+  }
+  .progress-track {
+    @apply relative h-1.5 w-full overflow-hidden rounded-full;
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .progress-fill {
+    @apply h-full rounded-full transition-all duration-500 ease-glass;
+    background: linear-gradient(90deg, #6ea8ff, #9ecbff);
+    box-shadow: 0 0 14px rgba(110, 168, 255, 0.55);
+  }
+  .progress-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+    animation: sweep 1.8s ease-in-out infinite;
+  }
+  .spinner {
+    @apply inline-block rounded-full border-2 border-white/15 border-t-accent-400;
+    animation: spin-slow 1.1s linear infinite;
+  }
+
+  .metric-bar {
+    @apply relative h-1.5 overflow-hidden rounded-full;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .stat-value {
+    @apply text-2xl font-semibold tabular-nums tracking-tight text-white;
+  }
+}
