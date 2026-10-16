@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { ApiError, asyncHandler } from './helpers.js';
+export { ApiError } from './helpers.js';
 import { z } from 'zod';
 import { AgentChatRequest, CapabilityInfo, HealthStatus, Settings } from '../../shared/types.js';
 import { settingsStore } from '../settingsStore.js';
@@ -11,22 +13,14 @@ import { handleChat, OrchestratorError } from '../orchestration/orchestrator.js'
 import { conversationStore } from '../orchestration/conversations.js';
 import { memoryStore } from '../memory/store.js';
 import { speechStatus } from '../speech/engines.js';
+import { specialistRegistry } from '../specialists/registry.js';
+import { runStore } from '../training/runs.js';
+import { versionStore } from '../models/versions.js';
+import { benchmarkStore } from '../benchmarks/store.js';
 
 const startedAt = Date.now();
 export const APP_VERSION = '0.1.0';
 
-export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code = 'BAD_REQUEST') {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
-const asyncHandler =
-  (fn: (req: Request, res: Response) => Promise<unknown>) =>
-  (req: Request, res: Response, next: NextFunction) => {
-    fn(req, res).catch(next);
-  };
 
 // Validation schemas — the API rejects malformed payloads instead of trusting them.
 const settingsPatchSchema = z
@@ -94,6 +88,11 @@ export function createApiRouter(): Router {
         settings.permissions.allowShell ? 'shell' : null,
       ].filter(Boolean) as string[];
 
+      const specialists = specialistRegistry.list();
+      const trained = specialists.filter((s) => s.activeVersion).length;
+      const runCounts = runStore.counts();
+      const versions = versionStore.listAll();
+      const scorecards = benchmarkStore.list({ limit: 100 });
       const health: HealthStatus = {
         status: external ? 'healthy' : 'degraded',
         uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
@@ -132,6 +131,24 @@ export function createApiRouter(): Router {
             name: 'Settings persistence',
             status: 'ok',
             detail: settingsStore.filePath(),
+          },
+          {
+            id: 'specialists',
+            name: 'Specialist AIs',
+            status: 'ok',
+            detail: `${specialists.length} registered · ${trained} with a trained version · ${specialists.filter((s) => s.state === 'training').length} training`,
+          },
+          {
+            id: 'training',
+            name: 'Training runs',
+            status: runCounts.failed > 0 && runCounts.running === 0 ? 'warn' : 'ok',
+            detail: `${runCounts.running} running · ${runCounts.completed} completed · ${runCounts.failed} failed · ${versions.length} stored versions`,
+          },
+          {
+            id: 'benchmarks',
+            name: 'Benchmarks',
+            status: scorecards.length > 0 ? 'ok' : 'unknown',
+            detail: scorecards.length > 0 ? `${scorecards.length} scorecard(s) recorded` : 'No benchmark has been run yet',
           },
         ],
       };
@@ -221,6 +238,7 @@ export function createApiRouter(): Router {
           id: c.id,
           title: c.title,
           capabilityId: c.capabilityId,
+          specialistId: c.specialistId,
           createdAt: c.createdAt,
           messageCount: c.messages.length,
         })),
@@ -399,6 +417,18 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   if (err instanceof OrchestratorError) {
     res.status(err.statusCode).json({ error: err.message, code: 'ORCHESTRATOR_ERROR' });
     return;
+  }
+  // Domain errors raised by the training engine and the benchmark runner carry
+  // their own status and machine-readable code. Without this branch a refused
+  // benchmark (SUITE_MISMATCH), an unavailable training method or an empty
+  // dataset would surface as an opaque 500, which is both wrong and dishonest.
+  if (err && typeof err === 'object') {
+    const domain = err as { status?: unknown; statusCode?: unknown; message?: string; code?: string };
+    const status = typeof domain.status === 'number' ? domain.status : typeof domain.statusCode === 'number' ? domain.statusCode : null;
+    if (status !== null && typeof domain.code === 'string') {
+      res.status(status).json({ error: domain.message ?? 'Request could not be completed', code: domain.code });
+      return;
+    }
   }
   const message = err instanceof Error ? err.message : String(err);
   logger.error('api', `Unhandled error: ${message}`);

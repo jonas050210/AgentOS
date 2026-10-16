@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createApiRouter, errorHandler, notFoundHandler } from './routes/api.js';
+import { createPlatformRouter } from './routes/platform.js';
 import { logger } from './logger.js';
 
 const ALLOWED_ORIGINS = (process.env.AGENTOS_ALLOWED_ORIGINS ?? '')
@@ -41,6 +42,7 @@ export function createApp(): Express {
   });
 
   app.use('/api', createApiRouter());
+  app.use('/api', createPlatformRouter());
 
   // Serve the production build when it exists.
   const distDir = path.join(process.cwd(), 'dist');

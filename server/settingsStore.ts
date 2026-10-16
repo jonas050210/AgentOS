@@ -21,7 +21,14 @@ function validate(raw: unknown): Settings {
   const ollama = (prov.ollama && typeof prov.ollama === 'object' ? prov.ollama : {}) as Record<string, unknown>;
   const voice = (r.voice && typeof r.voice === 'object' ? r.voice : {}) as Record<string, unknown>;
   const logging = (r.logging && typeof r.logging === 'object' ? r.logging : {}) as Record<string, unknown>;
+  const appearance = (r.appearance && typeof r.appearance === 'object' ? r.appearance : {}) as Record<string, unknown>;
+  const routing = (r.routing && typeof r.routing === 'object' ? r.routing : {}) as Record<string, unknown>;
+  const training = (r.training && typeof r.training === 'object' ? r.training : {}) as Record<string, unknown>;
   const levels = ['debug', 'info', 'warn', 'error'] as const;
+  const num = (value: unknown, fallback: number, min: number, max: number) =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  const pick = <T extends string>(value: unknown, options: readonly T[], fallback: T): T =>
+    options.includes(value as T) ? (value as T) : fallback;
 
   return {
     theme: r.theme === 'light' ? 'light' : 'dark',
@@ -42,6 +49,23 @@ function validate(raw: unknown): Settings {
         baseUrl: str(ollama.baseUrl, d.providers.ollama.baseUrl),
         model: str(ollama.model, d.providers.ollama.model, 120),
       },
+    },
+    appearance: {
+      reduceMotion: pick(appearance.reduceMotion, ['auto', 'on', 'off'] as const, d.appearance.reduceMotion),
+      glassIntensity: pick(appearance.glassIntensity, ['subtle', 'balanced', 'vivid'] as const, d.appearance.glassIntensity),
+      ambientGlow: bool(appearance.ambientGlow, d.appearance.ambientGlow),
+    },
+    routing: {
+      preferTrainedHeads: bool(routing.preferTrainedHeads, d.routing.preferTrainedHeads),
+      confidenceThreshold: num(routing.confidenceThreshold, d.routing.confidenceThreshold, 0.05, 0.99),
+      autoRoute: bool(routing.autoRoute, d.routing.autoRoute),
+      allowRuleFallback: bool(routing.allowRuleFallback, d.routing.allowRuleFallback),
+    },
+    training: {
+      autoPromote: bool(training.autoPromote, d.training.autoPromote),
+      minImprovement: num(training.minImprovement, d.training.minImprovement, 0, 0.5),
+      defaultDatasetId: str(training.defaultDatasetId, d.training.defaultDatasetId, 120),
+      autoBenchmark: bool(training.autoBenchmark, d.training.autoBenchmark),
     },
     voice: {
       sttEnabled: bool(voice.sttEnabled, d.voice.sttEnabled),

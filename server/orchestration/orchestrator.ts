@@ -1,4 +1,11 @@
-import { AgentChatRequest, AgentChatResponse, AgentMessage, AgentTraceStep, StatusLevel } from '../../shared/types.js';
+import {
+  AgentChatRequest,
+  AgentChatResponse,
+  AgentMessage,
+  AgentTraceStep,
+  SpecialistSummary,
+  StatusLevel,
+} from '../../shared/types.js';
 import { providerRegistry } from '../providers/registry.js';
 import { toolRegistry } from '../tools/registry.js';
 import { CAPABILITIES, getCapability, routeCapability } from '../capabilities/registry.js';
@@ -6,12 +13,11 @@ import { conversationStore } from './conversations.js';
 import { settingsStore } from '../settingsStore.js';
 import { logger } from '../logger.js';
 import { memoryStore } from '../memory/store.js';
-
-interface PlannedToolCall {
-  toolId: string;
-  input: Record<string, unknown>;
-  reason: string;
-}
+import { planForSpecialist } from '../specialists/policy.js';
+import { runSpecialist } from '../specialists/inference.js';
+import { specialistRegistry, specialistForCapability, CAPABILITY_TO_SPECIALIST } from '../specialists/registry.js';
+import { runStore } from '../training/runs.js';
+import { benchmarkStore } from '../benchmarks/store.js';
 
 export class OrchestratorError extends Error {
   constructor(message: string, readonly statusCode = 400) {
@@ -20,49 +26,28 @@ export class OrchestratorError extends Error {
   }
 }
 
+interface PlannedToolCall {
+  toolId: string;
+  input: Record<string, unknown>;
+  reason: string;
+}
+
 /**
- * Deterministic tool planner. It recognises a small set of explicit intents so
- * that the orchestration pipeline is genuinely exercised today; a model-backed
- * planner can replace `plan()` without touching the rest of the system.
+ * Deterministic tool planner (kept for compatibility with the pre-specialist
+ * API). It delegates to the shared rule policy so chat, the playground and the
+ * benchmarks all reason about tool selection in exactly the same way.
  */
 export function planTools(message: string, capabilityId: string, allowedToolIds: string[]): PlannedToolCall[] {
-  const calls: PlannedToolCall[] = [];
-  const allow = (id: string) => allowedToolIds.includes(id) && toolRegistry.get(id);
-
-  const urlMatch = message.match(/https?:\/\/[^\s"'<>]+/);
-  if (urlMatch && allow('http.fetch')) {
-    calls.push({ toolId: 'http.fetch', input: { url: urlMatch[0] }, reason: 'Message contains a URL to retrieve' });
+  const specialistId = specialistForCapability(capabilityId) ?? 'general-ai';
+  const plan = planForSpecialist(specialistId, message, allowedToolIds);
+  if (plan) return [{ toolId: plan.toolId, input: plan.input, reason: plan.reason }];
+  if (capabilityId === 'coding.assistant' && allowedToolIds.includes('workspace.list') && toolRegistry.get('workspace.list')) {
+    return [{ toolId: 'workspace.list', input: { path: '.' }, reason: 'Coding mode: survey workspace' }];
   }
-
-  const calcMatch = message.match(/(?:calc(?:ulate)?|compute|evaluate|=)\s*([0-9+\-*/%^().\s]{3,})/i);
-  if (calcMatch && allow('calc.evaluate')) {
-    calls.push({ toolId: 'calc.evaluate', input: { expression: calcMatch[1].trim() }, reason: 'Arithmetic expression detected' });
+  if (capabilityId === 'research.assistant' && allowedToolIds.includes('memory.search') && toolRegistry.get('memory.search')) {
+    return [{ toolId: 'memory.search', input: { query: message }, reason: 'Research mode: consult memory' }];
   }
-
-  if (/\b(read|open|cat)\b.*\b(file|src|server|readme)\b/i.test(message) && allow('workspace.read')) {
-    const pathMatch = message.match(/[\w./-]+\.(?:ts|tsx|js|jsx|json|md|css|html|py)/i);
-    if (pathMatch) {
-      calls.push({ toolId: 'workspace.read', input: { path: pathMatch[0] }, reason: `File reference ${pathMatch[0]}` });
-    }
-  }
-
-  if (/\b(remember|save|note|store)\b/i.test(message) && allow('memory.save')) {
-    calls.push({
-      toolId: 'memory.save',
-      input: { title: message.slice(0, 60), content: message },
-      reason: 'User asked to persist this information',
-    });
-  }
-
-  if (capabilityId === 'coding.assistant' && allow('workspace.list') && calls.length === 0) {
-    calls.push({ toolId: 'workspace.list', input: { path: '.' }, reason: 'Coding mode: survey workspace' });
-  }
-
-  if (capabilityId === 'research.assistant' && allow('memory.search') && calls.length === 0) {
-    calls.push({ toolId: 'memory.search', input: { query: message }, reason: 'Research mode: consult memory' });
-  }
-
-  return calls.slice(0, 4);
+  return [];
 }
 
 export function buildSystemPrompt(capabilityId: string, context: string[]): string {
@@ -76,6 +61,52 @@ export function buildSystemPrompt(capabilityId: string, context: string[]): stri
   return parts.join('\n\n');
 }
 
+export interface RouteDecision {
+  specialist: SpecialistSummary;
+  reason: string;
+  pinned: boolean;
+}
+
+/** Chooses the specialist for a request: explicit pin → capability → keywords. */
+export function routeToSpecialist(request: AgentChatRequest): RouteDecision {
+  const settings = settingsStore.get();
+
+  if (request.specialistId) {
+    const specialist = specialistRegistry.get(request.specialistId);
+    if (!specialist) throw new OrchestratorError(`Unknown specialist "${request.specialistId}"`, 404);
+    if (!specialist.enabled) {
+      throw new OrchestratorError(`${specialist.name} is disabled. Enable it in its workspace settings.`, 409);
+    }
+    return { specialist, reason: `Pinned by the user: ${specialist.name}`, pinned: true };
+  }
+
+  if (request.capabilityId) {
+    const specialistId = specialistForCapability(request.capabilityId);
+    const specialist = specialistId ? specialistRegistry.get(specialistId) : null;
+    if (specialist && specialist.enabled) {
+      return { specialist, reason: `Capability ${request.capabilityId} maps to ${specialist.name}`, pinned: true };
+    }
+  }
+
+  const routed = routeCapability(request.message ?? '');
+  const specialistId = specialistForCapability(routed.id);
+  const specialist = (specialistId ? specialistRegistry.get(specialistId) : null) ?? specialistRegistry.get('general-ai');
+  if (!specialist) throw new OrchestratorError('No specialist is available to handle this request.', 503);
+
+  if (!settings.routing.autoRoute && specialist.id !== 'general-ai') {
+    const fallback = specialistRegistry.get('general-ai');
+    if (fallback) {
+      return { specialist: fallback, reason: `Automatic routing is disabled in Settings → Routing — using ${fallback.name}`, pinned: false };
+    }
+  }
+
+  return {
+    specialist,
+    reason: `Auto-routed by intent (${routed.name}) to ${specialist.name}`,
+    pinned: false,
+  };
+}
+
 export async function handleChat(request: AgentChatRequest): Promise<AgentChatResponse> {
   const started = Date.now();
   const trace: AgentTraceStep[] = [];
@@ -84,23 +115,18 @@ export async function handleChat(request: AgentChatRequest): Promise<AgentChatRe
   if (message.length > 8000) throw new OrchestratorError('Message exceeds 8000 characters');
 
   const settings = settingsStore.get();
-  const capability = request.capabilityId ? getCapability(request.capabilityId) : undefined;
-  const selected = capability ?? routeCapability(message);
+  const route = routeToSpecialist(request);
   trace.push({
     step: 'route',
-    detail: capability
-      ? `Capability pinned by user: ${selected.name}`
-      : `Auto-routed to ${selected.name} (${selected.id})`,
-    status: 'ok',
+    detail: route.reason,
+    status: route.pinned ? 'ok' : 'ok',
   });
 
-  const conversation = request.conversationId
-    ? conversationStore.get(request.conversationId)
-    : conversationStore.create(selected.id);
+  const conversation = request.conversationId ? conversationStore.get(request.conversationId) : undefined;
   if (request.conversationId && !conversation) {
     trace.push({ step: 'conversation', detail: `Unknown conversation ${request.conversationId}; started a new one`, status: 'warn' });
   }
-  const conv = conversation ?? conversationStore.create(selected.id);
+  const conv = conversation ?? conversationStore.create(route.specialist.capabilityIds[0] ?? 'general.assistant', route.specialist.id);
 
   const userMessage: AgentMessage = {
     id: `msg_${Date.now().toString(36)}`,
@@ -110,107 +136,77 @@ export async function handleChat(request: AgentChatRequest): Promise<AgentChatRe
   };
   conversationStore.append(conv.id, userMessage);
 
-  // 1. Tool planning + execution
-  const plans = planTools(message, selected.id, selected.toolIds);
+  // Memory recall is injected as grounding for whatever answers next.
   const contextBlocks: string[] = [];
-  const toolResults: Array<{ toolId: string; success: boolean; output?: unknown; error?: string; durationMs: number }> = [];
-
-  if (plans.length === 0) {
-    trace.push({ step: 'plan', detail: 'No tool invocation required', status: 'skipped' });
-  } else {
-    for (const plan of plans) {
-      const outcome = await toolRegistry.execute(plan.toolId, plan.input);
-      toolResults.push({
-        toolId: outcome.toolId,
-        success: outcome.success,
-        output: outcome.output,
-        error: outcome.error,
-        durationMs: outcome.durationMs,
-      });
-      trace.push({
-        step: `tool:${plan.toolId}`,
-        detail: outcome.success
-          ? `${plan.reason} — succeeded in ${outcome.durationMs} ms`
-          : `${plan.reason} — failed: ${outcome.error ?? 'unknown error'}`,
-        status: outcome.success ? 'ok' : 'warn',
-        durationMs: outcome.durationMs,
-      });
-      if (outcome.success) {
-        contextBlocks.push(`[${plan.toolId}]\n${JSON.stringify(outcome.output).slice(0, 2000)}`);
-      }
-    }
-  }
-
-  // 2. Memory recall for grounding
-  if (selected.toolIds.includes('memory.search') && memoryStore.count() > 0) {
+  if (route.specialist.toolIds.includes('memory.search') && memoryStore.count() > 0) {
     const hits = memoryStore.search(message, 3);
     if (hits.length > 0) {
-      contextBlocks.push(
-        `[memory]\n${hits.map((h) => `- ${h.title}: ${h.content.slice(0, 200)}`).join('\n')}`,
-      );
+      contextBlocks.push(`[memory]\n${hits.map((h) => `- ${h.title}: ${h.content.slice(0, 200)}`).join('\n')}`);
       trace.push({ step: 'memory', detail: `Recalled ${hits.length} relevant note(s)`, status: 'ok' });
     }
   }
 
-  // 3. Model selection + inference
+  const result = await runSpecialist(route.specialist.id, message, { mode: 'chat' });
+  for (const step of result.trace) trace.push(step);
+
   const provider = await providerRegistry.preferred();
   const providerInfo = provider.info();
-  const usingFallback = provider.id === 'builtin';
-  trace.push({
-    step: 'model',
-    detail: usingFallback
-      ? 'No external provider available — using built-in offline engine'
-      : `Using ${providerInfo.name}`,
-    status: usingFallback ? 'warn' : 'ok',
-  });
-
-  const settingsModel = provider.id === 'openai' ? settings.providers.openai.model : settings.providers.ollama.model;
-  const modelName = usingFallback ? 'offline-reasoner' : settingsModel;
-
-  let answerText: string;
-  let usage: { promptTokens?: number; completionTokens?: number } | undefined;
-  const inferStarted = Date.now();
-  try {
-    const result = await provider.generate({
-      model: modelName,
-      prompt: message,
-      system: buildSystemPrompt(selected.id, contextBlocks),
-      temperature: 0.7,
+  const usedOfflineFallback = result.answeredBy === 'offline-engine';
+  if (result.providerError) {
+    // Honest reporting: the provider was unreachable, so nothing answered.
+    trace.push({
+      step: 'model',
+      detail: `${providerInfo.name} was unreachable: ${result.providerError}`,
+      status: 'error',
     });
-    answerText = result.text;
-    usage = result.usage;
-    trace.push({ step: 'inference', detail: `${modelName} responded in ${Date.now() - inferStarted} ms`, status: 'ok', durationMs: Date.now() - inferStarted });
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    logger.error('orchestrator', 'Inference failed', { error: detail });
-    trace.push({ step: 'inference', detail: `Provider failure: ${detail}`, status: 'error', durationMs: Date.now() - inferStarted });
-    answerText = [
-      'The configured model provider could not be reached, so this turn could not be completed.',
-      `Details: ${detail}`,
-      'You can retry, or switch provider in Settings → Providers.',
-    ].join('\n');
+  } else if (result.escalated) {
+    trace.push({
+      step: 'model',
+      detail: usedOfflineFallback
+        ? 'No external provider available — the offline engine answered instead'
+        : `${providerInfo.name} supplied the language answer`,
+      status: usedOfflineFallback ? 'warn' : 'ok',
+    });
+  } else {
+    trace.push({
+      step: 'execution',
+      detail: `${route.specialist.name} handled this locally via ${result.engine}`,
+      status: 'ok',
+    });
   }
 
   const assistantMessage: AgentMessage = {
     id: `msg_${Date.now().toString(36)}_a`,
     role: 'assistant',
-    content: answerText,
+    content: result.answer,
     timestamp: new Date().toISOString(),
     meta: {
-      capabilityId: selected.id,
-      providerId: provider.id,
-      model: modelName,
-      degraded: usingFallback,
-      tools: toolResults.map((t) => ({ toolId: t.toolId, success: t.success })),
-      usage,
+      // `capabilityId` is retained for backwards compatibility with earlier clients.
+      capabilityId: route.specialist.capabilityIds[0] ?? CAPABILITY_TO_SPECIALIST[route.specialist.id] ?? null,
+      specialistId: route.specialist.id,
+      specialistName: route.specialist.name,
+      engine: result.engine,
+      versionId: result.versionId,
+      versionLabel: result.versionLabel,
+      predicted: result.predicted,
+      confidence: result.confidence,
+      escalated: result.escalated,
+      escalationReason: result.escalationReason,
+      providerId: result.escalated ? provider.id : 'local',
+      model: result.escalated ? (provider.id === 'openai' ? settings.providers.openai.model : settings.providers.ollama.model) : result.engine,
+      degraded: usedOfflineFallback,
+      answeredBy: result.answeredBy,
+      providerError: result.providerError,
+      tools: result.toolCalls.map((t) => ({ toolId: t.toolId, success: t.success })),
+      latencyMs: result.latencyMs,
       durationMs: Date.now() - started,
     },
   };
   conversationStore.append(conv.id, assistantMessage);
 
-  logger.info('orchestrator', `Completed turn via ${provider.id}`, {
-    capability: selected.id,
-    tools: toolResults.length,
+  logger.info('orchestrator', `Completed turn with ${route.specialist.name}`, {
+    escalated: result.escalated,
+    predicted: result.predicted,
     durationMs: Date.now() - started,
   });
 
@@ -218,11 +214,23 @@ export async function handleChat(request: AgentChatRequest): Promise<AgentChatRe
 }
 
 export function orchestrationStatus(): { status: StatusLevel; detail: string; capabilities: number; tools: number } {
+  const specialists = specialistRegistry.list();
+  const running = runStore.counts().running;
   const tools = toolRegistry.all().length;
   return {
     status: 'ok',
-    detail: `Orchestrator ready — ${CAPABILITIES.length} capabilities, ${tools} tools registered`,
+    detail: `${specialists.length} specialists · ${tools} tools · ${running} training run(s) active`,
     capabilities: CAPABILITIES.length,
     tools,
+  };
+}
+
+export function platformStats() {
+  const specialists = specialistRegistry.list();
+  return {
+    specialists: specialists.length,
+    trained: specialists.filter((s) => s.activeVersion).length,
+    training: runStore.counts(),
+    scorecards: benchmarkStore.list({ limit: 100 }).length,
   };
 }

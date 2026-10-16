@@ -51,7 +51,18 @@ describe('AgentOS HTTP API', () => {
     const body = await readJson(res);
     expect(['healthy', 'degraded', 'down']).toContain(body.status);
     expect(body.components.map((c: { id: string }) => c.id)).toEqual(
-      expect.arrayContaining(['orchestrator', 'models', 'tools', 'permissions', 'memory', 'settings']),
+      expect.arrayContaining([
+        'orchestrator',
+        'models',
+        'tools',
+        'permissions',
+        'memory',
+        'settings',
+        // v0.2.0 platform components
+        'specialists',
+        'training',
+        'benchmarks',
+      ]),
     );
   });
 
@@ -195,7 +206,12 @@ describe('AgentOS HTTP API', () => {
     expect(res.status).toBe(200);
     const body = await readJson(res);
     expect(body.message.content).toMatch(/socket hang up/);
-    expect(body.trace.find((t: { step: string }) => t.step === 'inference').status).toBe('error');
+    expect(body.message.content).toMatch(/could not complete this request/i);
+    expect(body.trace.find((t: { step: string }) => t.step === 'escalate').status).toBe('error');
+    // A failed provider must never be reported as the author of the answer.
+    expect(body.trace.find((t: { step: string }) => t.step === 'model').status).toBe('error');
+    expect(body.message.meta.providerError).toBe('socket hang up');
+    expect(body.message.meta.answeredBy).toBe('local');
     providerRegistry.register(original);
   });
 });

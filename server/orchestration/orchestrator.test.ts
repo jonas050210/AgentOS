@@ -40,9 +40,15 @@ describe('orchestrator', () => {
 
     const steps = res.trace.map((t) => t.step);
     expect(steps).toContain('route');
-    expect(steps).toContain('model');
-    expect(steps).toContain('inference');
+    expect(steps).toContain('decide');
+    expect(steps).toContain('escalate');
     expect(res.trace.find((t) => t.step === 'model')?.status).toBe('warn');
+    // Nothing was trained in this fresh data dir, so the specialist escalated
+    // and the offline engine answered — the meta must say exactly that.
+    const meta = res.message.meta as { answeredBy: string; escalated: boolean; specialistId: string };
+    expect(meta.answeredBy).toBe('offline-engine');
+    expect(meta.escalated).toBe(true);
+    expect(meta.specialistId).toBeTruthy();
   });
 
   it('auto-routes messages to the matching capability', async () => {
@@ -53,10 +59,13 @@ describe('orchestrator', () => {
     expect((knowledge.message.meta as { capabilityId: string }).capabilityId).toBe('knowledge.manager');
   });
 
-  it('honours a pinned capability', async () => {
+  it('honours a pinned capability and pins the legacy capability onto a specialist', async () => {
     const res = await orchestrator.handleChat({ message: 'hello', capabilityId: 'research.assistant' });
     expect((res.message.meta as { capabilityId: string }).capabilityId).toBe('research.assistant');
-    expect(res.trace[0].detail).toMatch(/pinned by user/);
+    // The legacy capability API still works, but it now resolves to a real specialist.
+    expect((res.message.meta as { specialistId: string }).specialistId).toBe('research-ai');
+    expect(res.trace[0].detail).toMatch(/pinned by the user|maps to research ai/i);
+    expect(res.trace[0].status).toBe('ok');
   });
 
   it('executes planned tools and records them in the trace', async () => {
@@ -64,7 +73,8 @@ describe('orchestrator', () => {
     const toolStep = res.trace.find((t) => t.step === 'tool:calc.evaluate');
     expect(toolStep).toBeDefined();
     expect(toolStep?.status).toBe('ok');
-    expect((res.message.meta as { tools: unknown[] }).tools).toHaveLength(1);
+    expect((res.message.meta as { tools: Array<{ success: boolean }> }).tools).toHaveLength(1);
+    expect((res.message.meta as { tools: Array<{ success: boolean }> }).tools[0].success).toBe(true);
   });
 
   it('keeps a conversation going across turns', async () => {
@@ -93,9 +103,14 @@ describe('orchestrator', () => {
     });
 
     const res = await orchestrator.handleChat({ message: 'hello' });
-    expect(res.message.content).toMatch(/could not be reached/);
+    expect(res.message.content).toMatch(/could not complete this request/i);
     expect(res.message.content).toMatch(/connection refused/);
-    expect(res.trace.find((t) => t.step === 'inference')?.status).toBe('error');
+    expect(res.trace.find((t) => t.step === 'escalate')?.status).toBe('error');
+    // The provider never answered, so the trace must not claim it did.
+    const modelStep = res.trace.find((t) => t.step === 'model');
+    expect(modelStep?.status).toBe('error');
+    expect(modelStep?.detail).toMatch(/unreachable/);
+    expect((res.message.meta as { providerError: string }).providerError).toBe('connection refused');
 
     // restore the real adapter for other tests
     vi.resetModules();
@@ -104,7 +119,24 @@ describe('orchestrator', () => {
   });
 
   it('plans no tools for plain conversation', () => {
-    expect(orchestrator.planTools('hello world', 'general.assistant', ['system.info'])).toEqual([]);
+    expect(orchestrator.planTools('hello world', 'general-ai', ['system.info'])).toEqual([]);
+  });
+
+  it('plans the same tools the specialist policy would run (one shared planner)', () => {
+    const planned = orchestrator.planTools('what is 12 * 4', 'coding-ai', ['calc.evaluate']);
+    expect(planned).toHaveLength(1);
+    expect(planned[0].toolId).toBe('calc.evaluate');
+    expect(planned[0].input).toEqual({ expression: '12*4' });
+  });
+
+  it('routes to a named specialist and reports it in the trace', async () => {
+    const res = await orchestrator.handleChat({ message: 'summarise our notes', specialistId: 'knowledge-ai' });
+    expect((res.message.meta as { specialistId: string }).specialistId).toBe('knowledge-ai');
+    expect(res.trace[0].detail).toMatch(/pinned by the user/i);
+  });
+
+  it('rejects an unknown specialist instead of silently falling back', async () => {
+    await expect(orchestrator.handleChat({ message: 'hi', specialistId: 'no-such-ai' })).rejects.toThrow(/Unknown specialist/);
   });
 });
 

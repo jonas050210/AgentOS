@@ -8,6 +8,8 @@ export interface Conversation {
   id: string;
   title: string;
   capabilityId: string;
+  /** Specialist that handled this conversation (set when the first turn routed). */
+  specialistId: string | null;
   createdAt: string;
   messages: AgentMessage[];
 }
@@ -16,11 +18,12 @@ export interface Conversation {
 export class ConversationStore {
   private conversations = new Map<string, Conversation>();
 
-  create(capabilityId: string, title = 'New conversation'): Conversation {
+  create(capabilityId: string, specialistId: string | null = null, title = 'New conversation'): Conversation {
     const conv: Conversation = {
       id: `conv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       title,
       capabilityId,
+      specialistId,
       createdAt: new Date().toISOString(),
       messages: [],
     };
@@ -42,7 +45,7 @@ export class ConversationStore {
   }
 
   append(id: string, message: AgentMessage): Conversation {
-    const conv = this.conversations.get(id) ?? this.create('general.assistant');
+    const conv = this.conversations.get(id) ?? this.create('general.assistant', 'general-ai');
     conv.messages.push(message);
     if (conv.messages.length > MAX_TURNS) conv.messages.splice(0, conv.messages.length - MAX_TURNS);
     if (conv.messages.length === 1 && message.role === 'user') {

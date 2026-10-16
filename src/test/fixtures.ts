@@ -8,6 +8,16 @@ export type SettingsFixture = Settings & {
   };
 };
 
+/**
+ * v0.2.0 defaults, mirrored from the server so UI tests exercise the same
+ * contract the API validates (appearance, routing and training settings).
+ */
+export const platformDefaults = {
+  appearance: { reduceMotion: 'auto' as const, glassIntensity: 'balanced' as const, ambientGlow: true },
+  routing: { preferTrainedHeads: true, confidenceThreshold: 0.45, autoRoute: true, allowRuleFallback: true },
+  training: { autoPromote: false, minImprovement: 0.01, defaultDatasetId: '', autoBenchmark: true },
+};
+
 export const healthFixture: HealthStatus = {
   status: 'degraded',
   uptimeSeconds: 12,
@@ -29,6 +39,7 @@ export const settingsFixture: SettingsFixture = {
   },
   voice: { sttEnabled: true, ttsEnabled: true, voiceName: '' },
   logging: { level: 'info' as const },
+  ...platformDefaults,
   settingsPath: '/tmp/agentos/data/settings.json',
 };
 
@@ -131,3 +142,8 @@ export const activityFixture = {
   ],
   level: 'info',
 };
+
+/**
+ * v0.2.0 defaults, mirrored from the server so the UI tests exercise the same
+ * contract the API validates (routing, appearance and training settings).
+ */
