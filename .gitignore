@@ -23,3 +23,19 @@ Thumbs.db
 # test & tooling caches
 coverage/
 .vitest/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# codemind runtime data (created by the app, never part of the source)
+codemind.db
+codemind.db-shm
+codemind.db-wal
+*/logs/codemind.jsonl*

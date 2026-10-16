@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CodeMind
+GenericName=Autonomous coding assistant
+Comment=Local coding agent: plans, edits, runs tests, trains adapters on your own machine
+Exec=python3 /opt/codemind/main.py
+Icon=/opt/codemind/assets/codemind.png
+Terminal=false
+Categories=Development;IDE;
+Keywords=code;agent;ai;local;git;
+StartupNotify=true
