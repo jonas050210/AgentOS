@@ -246,9 +246,14 @@ export function OverviewView({ onOpen }: { onOpen: (target: NavTarget) => void }
                         {card.tasksPassed}/{card.tasksTotal} tasks · p50 {card.latencyMsP50.toFixed(2)} ms
                       </span>
                       {comparison && comparison.verdict !== 'no_baseline' && (
-                        <Badge tone={comparison.verdict === 'improved' ? 'ok' : comparison.verdict === 'regressed' ? 'error' : 'unknown'}>
-                          {comparison.verdict}
-                        </Badge>
+                        <span className="flex items-center gap-1.5">
+                          <Badge tone={comparison.verdict === 'improved' ? 'ok' : comparison.verdict === 'regressed' ? 'error' : 'unknown'}>
+                            {comparison.verdict}
+                          </Badge>
+                          {comparison.baselineLabel && (
+                            <span className="text-2xs text-slate-500">vs {comparison.baselineLabel}</span>
+                          )}
+                        </span>
                       )}
                       {card.versionId.endsWith('@untrained') && <Badge tone="unknown">baseline</Badge>}
                     </div>

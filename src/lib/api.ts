@@ -83,6 +83,8 @@ export interface PlatformOverview {
     specialistId: string;
     suiteName: string;
     verdict: 'improved' | 'regressed' | 'unchanged' | 'no_baseline';
+    /** Version the candidate was measured against, when there was one. */
+    baselineLabel: string | null;
     quality: number;
     createdAt: string;
   }>;
@@ -192,7 +194,9 @@ export const api = {
     if (params.suiteId) query.set('suiteId', params.suiteId);
     if (params.versionId) query.set('versionId', params.versionId);
     query.set('limit', String(params.limit ?? 25));
-    return request<{ scorecards: BenchmarkScorecard[] }>(`/benchmarks/scorecards?${query.toString()}`);
+    return request<{ scorecards: BenchmarkScorecard[]; comparisons?: Record<string, BenchmarkComparison> }>(
+      `/benchmarks/scorecards?${query.toString()}`,
+    );
   },
   scorecard: (id: string) => request<BenchmarkScorecard>(`/benchmarks/scorecards/${encodeURIComponent(id)}`),
   runBenchmark: (payload: BenchmarkRunRequest) => request<BenchmarkScorecard>('/benchmarks/run', { method: 'POST', body: JSON.stringify(payload) }),

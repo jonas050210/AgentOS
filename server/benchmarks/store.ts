@@ -162,6 +162,7 @@ export class BenchmarkStore {
         baselineId: null,
         rows: [],
         verdict: 'no_baseline',
+        tradeoffs: [],
         summary: 'No baseline scorecard for this suite yet — this result becomes the reference.',
       };
     }
@@ -194,33 +195,41 @@ export class BenchmarkStore {
     });
 
     const regressions = rows.filter((row) => row.regression);
-    const improvements = rows.filter((row) => row.direction === 'better');
     const qualityRow = rows.find((row) => row.metric === 'quality')!;
     // Two runs of the same version are a repeat measurement, not an improvement:
     // calling noise progress would make the promotion trail untrustworthy.
     const sameVersion = candidate.versionId === baseline.versionId;
+    // The verdict answers one question — "is this version better than the one it
+    // replaced?" — and the answer follows the quality score, because that is what
+    // a promotion is decided on. A slower or heavier candidate is not called a
+    // regression for that alone: the cost is reported as a trade-off instead, so
+    // a 30-point quality gain is never hidden behind a latency warning.
+    const qualityRegression = qualityRow.regression;
+    const qualityImprovement = qualityRow.delta > REGRESSION_THRESHOLDS.quality;
+    const tradeoffs = regressions.filter((row) => row.metric !== 'quality').map((row) => row.label);
     const verdict: BenchmarkComparison['verdict'] = sameVersion
       ? regressions.length > 0
         ? 'regressed'
         : 'unchanged'
-      : regressions.length > 0
+      : qualityRegression
         ? 'regressed'
-        : improvements.length > 0
+        : qualityImprovement
           ? 'improved'
           : 'unchanged';
+    const qualityDelta = `${qualityRow.delta * 100 >= 0 ? '+' : ''}${(qualityRow.delta * 100).toFixed(1)}`;
     const faster = rows.filter((row) => row.metric.startsWith('latency') && row.direction === 'better').length;
     const summary =
       verdict === 'regressed' && sameVersion
         ? `Repeat run of ${candidate.versionLabel} came out worse than the previous run: ${regressions.map((row) => row.label).join(', ')} — treat this result as unstable.`
         : verdict === 'regressed'
-          ? `${candidate.versionLabel} is worse than ${baseline.versionLabel}: ${regressions.map((row) => row.label).join(', ')}.`
+          ? `${candidate.versionLabel} is worse than ${baseline.versionLabel}: quality ${qualityDelta} points, ${regressions.map((row) => row.label).join(', ')} worse.`
           : verdict === 'improved'
-            ? `${candidate.versionLabel} improves on ${baseline.versionLabel}: quality ${(qualityRow.delta * 100 >= 0 ? '+' : '')}${(qualityRow.delta * 100).toFixed(1)} points, ${improvements.length} metric(s) better.`
+            ? `${candidate.versionLabel} improves on ${baseline.versionLabel}: quality ${qualityDelta} points${tradeoffs.length > 0 ? `, at the cost of ${tradeoffs.join(', ')}` : ''}.`
             : sameVersion
-              ? `Repeat run of ${candidate.versionLabel}: quality unchanged (${(qualityRow.delta * 100 >= 0 ? '+' : '')}${(qualityRow.delta * 100).toFixed(1)} points), ${faster} latency metric(s) better.`
+              ? `Repeat run of ${candidate.versionLabel}: quality unchanged (${qualityDelta} points), ${faster} latency metric(s) better.`
               : `${candidate.versionLabel} is statistically indistinguishable from ${baseline.versionLabel}.`;
 
-    return { suiteId: candidate.suiteId, candidateId: candidate.id, baselineId: baseline.id, rows, verdict, summary };
+    return { suiteId: candidate.suiteId, candidateId: candidate.id, baselineId: baseline.id, rows, verdict, tradeoffs, summary };
   }
 
   /** Baseline lookup order: the version's own history, then the untrained baseline, then anything. */
@@ -230,7 +239,7 @@ export class BenchmarkStore {
       const own = sameSuite.find((card) => card.versionId === versionId);
       if (own) return own;
     }
-    const untrained = sameSuite.find((card) => card.versionId === 'untrained');
+    const untrained = sameSuite.find((card) => card.versionId.endsWith('@untrained'));
     if (untrained) return untrained;
     return sameSuite[0] ?? null;
   }

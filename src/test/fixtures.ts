@@ -365,7 +365,7 @@ export const overviewFixture = {
   scorecards: [scorecardFixture, baselineScorecardFixture],
   versions: [specialistFixture.activeVersion],
   recentComparisons: [
-    { scorecardId: 'card_a', specialistId: 'coding-ai', suiteName: 'Coding · decision routing', verdict: 'improved' as const, quality: 0.8, createdAt: '2026-01-01T00:12:00.000Z' },
+    { scorecardId: 'card_a', specialistId: 'coding-ai', suiteName: 'Coding · decision routing', verdict: 'improved' as const, baselineLabel: 'untrained baseline', quality: 0.8, createdAt: '2026-01-01T00:12:00.000Z' },
   ],
   methods: [trainingMethodFixture, externalMethodFixture],
   datasets: [datasetFixture],
@@ -381,8 +381,9 @@ export const comparisonFixture = {
     { metric: 'quality', label: 'Quality score', candidate: 0.8, baseline: 0.5222, delta: 0.2778, deltaPct: 53.2, direction: 'better' as const, regression: false },
     { metric: 'latencyMsP50', label: 'Latency p50 (ms)', candidate: 1.04, baseline: 0.0152, delta: 1.02, deltaPct: 6740, direction: 'worse' as const, regression: true },
   ],
-  verdict: 'regressed' as const,
-  summary: 'v1 is worse than untrained baseline: Latency p50 (ms).',
+  verdict: 'improved' as const,
+  tradeoffs: ['Latency p50 (ms)'],
+  summary: 'v1 improves on untrained baseline: quality +27.8 points, at the cost of Latency p50 (ms).',
 };
 
 export const testResultFixture = {

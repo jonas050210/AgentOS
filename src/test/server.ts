@@ -117,7 +117,14 @@ export function mockApi(overrides: Partial<Record<string, unknown>> = {}, option
     if (path.startsWith('/api/models/versions')) return json({ versions: [specialistFixture.activeVersion], activeVersionIds: { 'coding-ai': 'coding-ai@v1' } });
     if (path.startsWith('/api/benchmarks/suites')) return json({ suites: [suiteFixture] });
     if (path.startsWith('/api/benchmarks/scorecards/')) return json({ ...scorecardFixture, taskResults: scorecardFixture.taskResults });
-    if (path.startsWith('/api/benchmarks/scorecards')) return json({ scorecards: [scorecardFixture, baselineScorecardFixture] });
+    if (path.startsWith('/api/benchmarks/scorecards'))
+      return json({
+        scorecards: [scorecardFixture, baselineScorecardFixture],
+        comparisons: {
+          [scorecardFixture.id]: comparisonFixture,
+          [baselineScorecardFixture.id]: { ...comparisonFixture, candidateId: baselineScorecardFixture.id, baselineId: null, rows: [], verdict: 'no_baseline' as const, summary: 'No earlier measurement in this suite — this is the first card.' },
+        },
+      });
     if (path.startsWith('/api/benchmarks/compare')) return json(comparisonFixture);
     if (path.startsWith('/api/benchmarks/run') && method === 'POST') return json(scorecardFixture);
     if (path.startsWith('/api/settings/reset')) return json(settingsFixture);

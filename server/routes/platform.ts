@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import {
   BenchmarkRunRequest,
+  BenchmarkScorecard,
   BenchmarkSuiteId,
   CreateSpecialistRequest,
   SpecialistPatch,
@@ -117,6 +118,17 @@ async function verifyPromotion(versionId: string): Promise<{ ok: boolean; compar
     comparison,
     message: comparison.summary,
   };
+}
+
+/**
+ * What a scorecard should be compared against: an earlier card of the same
+ * version and suite (a repeat run), else the untrained baseline card for that
+ * suite. A baseline card has nothing before it and reports no baseline instead
+ * of being dressed up as an improvement.
+ */
+function defaultBaseline(card: BenchmarkScorecard): BenchmarkScorecard | null {
+  if (card.versionId.endsWith('@untrained')) return null;
+  return benchmarkStore.findBaseline(card, card.versionId);
 }
 
 export function createPlatformRouter(): Router {
@@ -471,7 +483,13 @@ export function createPlatformRouter(): Router {
       const suiteId = typeof req.query.suiteId === 'string' ? (req.query.suiteId as BenchmarkSuiteId) : undefined;
       const versionId = typeof req.query.versionId === 'string' ? req.query.versionId : undefined;
       const limit = Math.min(Number(req.query.limit ?? 30) || 30, 100);
-      res.json({ scorecards: benchmarkStore.list({ specialistId, suiteId, versionId, limit }) });
+      const cards = benchmarkStore.list({ specialistId, suiteId, versionId, limit });
+      // Every card ships with the comparison the platform actually stands behind:
+      // the previous card of the same suite/version, else the untrained baseline.
+      // The UI never has to guess what a number should be measured against.
+      const comparisons: Record<string, ReturnType<typeof benchmarkStore.buildComparison>> = {};
+      for (const card of cards) comparisons[card.id] = benchmarkStore.buildComparison(card, defaultBaseline(card));
+      res.json({ scorecards: cards, comparisons });
     }),
   );
 
@@ -507,7 +525,7 @@ export function createPlatformRouter(): Router {
       const baselineId = String(req.query.baselineId ?? '');
       const candidate = benchmarkStore.get(candidateId);
       if (!candidate) throw new ApiError('Unknown candidate scorecard', 404, 'NOT_FOUND');
-      const baseline = baselineId ? benchmarkStore.get(baselineId) : null;
+      const baseline = baselineId ? benchmarkStore.get(baselineId) : defaultBaseline(candidate);
       res.json(benchmarkStore.buildComparison(candidate, baseline));
     }),
   );
@@ -528,13 +546,13 @@ export function createPlatformRouter(): Router {
         .filter((card) => card.suiteId && versions.some((v) => v.id === card.versionId))
         .slice(0, 6)
         .map((card) => {
-          const active = versionStore.activeVersion(card.specialistId);
-          const baseline = active ? benchmarkStore.latestFor(card.suiteId, active.id) : null;
+          const baseline = defaultBaseline(card);
           return {
             scorecardId: card.id,
             specialistId: card.specialistId,
             suiteName: card.suiteName,
-            verdict: baseline && baseline.id !== card.id ? benchmarkStore.buildComparison(card, baseline).verdict : 'no_baseline',
+            verdict: baseline ? benchmarkStore.buildComparison(card, baseline).verdict : 'no_baseline',
+            baselineLabel: baseline?.versionLabel ?? null,
             quality: card.quality,
             createdAt: card.createdAt,
           };

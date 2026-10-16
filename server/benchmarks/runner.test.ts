@@ -210,6 +210,59 @@ describe('benchmark runner', () => {
     expect(comparison.rows.some((row) => row.metric === 'quality' && row.regression)).toBe(true);
   });
 
+  it('calls a slower but clearly better candidate an improvement and names the cost', () => {
+    const base = {
+      suiteId: 'coding.routing' as const,
+      suiteName: 'Coding · decision routing',
+      specialistId: 'coding-ai',
+      specialistName: 'Coding AI',
+      quality: 0.5,
+      taskSuccessRate: 0.5,
+      tasksPassed: 45,
+      tasksTotal: 90,
+      latencyMsP50: 0.02,
+      latencyMsP95: 0.05,
+      latencyMsMean: 0.03,
+      reliability: 1,
+      failures: 0,
+      cpuMs: 5,
+      heapDeltaMb: 0,
+      metrics: { accuracy: 0.5 },
+      taskResults: [],
+      createdAt: new Date().toISOString(),
+      durationMs: 10,
+      engine: 'unit test',
+    };
+    const baseline = store.benchmarkStore.save({ ...base, id: 'card_unit_base', versionId: 'coding-ai@untrained', versionLabel: 'untrained baseline' });
+    const candidate = store.benchmarkStore.save({
+      ...base,
+      id: 'card_unit_head',
+      versionId: 'coding-ai@v1',
+      versionLabel: 'v1',
+      quality: 0.8,
+      taskSuccessRate: 0.8,
+      tasksPassed: 72,
+      latencyMsP50: 1.2,
+      latencyMsP95: 2.4,
+      latencyMsMean: 1.4,
+      cpuMs: 60,
+      engine: 'trained task head (v1)',
+    });
+
+    const comparison = store.benchmarkStore.compare(candidate, baseline);
+    // 30 points of quality must not be reported as a regression because a learned
+    // head is slower than a dictionary lookup — the cost is stated instead.
+    expect(comparison.verdict).toBe('improved');
+    expect(comparison.tradeoffs.join(' ')).toMatch(/latency/i);
+    expect(comparison.summary).toMatch(/improves on untrained baseline/);
+    expect(comparison.summary).toMatch(/cost of Latency/);
+
+    // The candidate's own earlier card is the baseline when one exists, so a
+    // repeat run is compared against itself rather than against the baseline again.
+    const repeat = store.benchmarkStore.save({ ...candidate, id: 'card_unit_repeat' });
+    expect(store.benchmarkStore.findBaseline(repeat, repeat.versionId)?.id).toBe(candidate.id);
+  });
+
   it('keeps scorecards queryable per specialist and per suite', async () => {
     await runner.runBenchmark({ specialistId: 'voice-ai', suiteId: 'voice.normalization' });
     const cards = store.benchmarkStore.list({ specialistId: 'voice-ai' });

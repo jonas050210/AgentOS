@@ -28,12 +28,14 @@ describe('benchmarks view', () => {
     expect(screen.getAllByText('Coding · decision routing').length).toBeGreaterThan(0);
   });
 
-  it('pairs a measurement with its baseline and labels a regression as one', async () => {
+  it('pairs a measurement with its baseline and states the cost of an improvement', async () => {
     renderWith(<BenchmarksView onOpen={() => undefined} />);
     await screen.findAllByText('Coding · decision routing');
     await userEvent.click(screen.getAllByText('Coding · decision routing')[0]);
-    // The comparison for this pair reports the latency regression it measured.
-    expect(await screen.findByText(/is worse than untrained baseline/)).toBeInTheDocument();
+    // Quality decides the verdict; the latency the candidate pays for it is
+    // reported as a trade-off rather than being called a regression.
+    expect(await screen.findByText(/improves on untrained baseline/)).toBeInTheDocument();
+    expect(screen.getByText(/pays for its score on Latency p50 \(ms\)/)).toBeInTheDocument();
     expect(screen.getByText('Latency p50 (ms)')).toBeInTheDocument();
   });
 

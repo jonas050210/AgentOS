@@ -89,8 +89,21 @@ describe('platform API · specialists', () => {
       }),
     );
     const id = created.id;
-    expect(id).toMatch(/^finance-ai/);
+    // A name that already ends in "AI" must not become "finance-ai-ai".
+    expect(id).toBe('finance-ai');
     expect(created.category).toBe('custom');
+
+    const second = await readJson<{ id: string }>(
+      await send('/api/specialists', {
+        name: 'Release Notes',
+        tagline: 'Drafts release notes',
+        category: 'custom',
+        toolIds: ['workspace.read'],
+        trainingMethodIds: ['task_head_sgd'],
+        benchmarkSuiteIds: [],
+      }),
+    );
+    expect(second.id).toBe('release-notes-ai');
 
     const patched = await readJson<{ tagline: string }>(await send(`/api/specialists/${id}`, { tagline: 'Reconciles invoices' }, 'PATCH'));
     expect(patched.tagline).toBe('Reconciles invoices');
@@ -104,6 +117,7 @@ describe('platform API · specialists', () => {
     const removed = await fetch(`${baseUrl}/api/specialists/${id}`, { method: 'DELETE' });
     expect(removed.status).toBe(200);
     expect((await get(`/api/specialists/${id}`)).status).toBe(404);
+    await fetch(`${baseUrl}/api/specialists/${second.id}`, { method: 'DELETE' });
   });
 
   it('rejects an invalid specialist payload instead of storing it', async () => {
@@ -290,6 +304,47 @@ describe('platform API · models and benchmarks', () => {
     const after = await readJson(await get('/api/models/versions?specialistId=voice-ai'));
     expect(after.versions.filter((v: { status: string }) => v.status === 'active')).toHaveLength(1);
     expect(after.versions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('measures a promoted version against the untrained baseline instead of reporting no baseline', async () => {
+    // A promoted card must still be comparable: the overview and the scorecard
+    // list have to resolve the baseline themselves, otherwise the UI shows
+    // "no_baseline" for every honest before/after pair.
+    const run = await readJson<{ id: string }>(
+      await send('/api/training/runs', {
+        specialistId: 'coding-ai',
+        methodId: 'task_head_sgd',
+        datasetId: 'coding.tool_routing',
+        runBenchmarkAfter: true,
+        autoPromote: true,
+      }),
+    );
+    const finished = await waitForRun(run.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.scorecardId).toBeTruthy();
+
+    const list = await readJson<{ scorecards: Array<{ id: string }>; comparisons: Record<string, { verdict: string; baselineId: string | null }> }>(
+      await get('/api/benchmarks/scorecards?limit=50'),
+    );
+    const trained = list.scorecards.find((card) => card.id === finished.scorecardId)!;
+    expect(trained).toBeTruthy();
+    const entry = list.comparisons[trained.id];
+    expect(entry.verdict).toBe('improved');
+    expect(entry.baselineId).toBeTruthy();
+
+    // The compare endpoint resolves the same baseline when none is supplied.
+    const comparison = await readJson<{ verdict: string; baselineId: string | null }>(
+      await get(`/api/benchmarks/compare?candidateId=${trained.id}`),
+    );
+    expect(comparison.verdict).toBe('improved');
+
+    // Baseline cards stay without a baseline rather than being dressed up.
+    const baselineCard = list.scorecards.find((card) => card.id !== trained.id && list.comparisons[card.id]?.verdict === 'no_baseline');
+    expect(baselineCard).toBeTruthy();
+
+    const overview = await readJson<{ recentComparisons: Array<{ scorecardId: string; verdict: string }> }>(await get('/api/platform/overview'));
+    const overviewEntry = overview.recentComparisons.find((entry) => entry.scorecardId === trained.id);
+    expect(overviewEntry?.verdict).toBe('improved');
   });
 
   it('serves the benchmark catalogue and never claims a suite can test the wrong category', async () => {

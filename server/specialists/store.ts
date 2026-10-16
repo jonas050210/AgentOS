@@ -203,10 +203,12 @@ export const specialistStore = {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '')
       .slice(0, 40);
-    let id = `${slug || 'specialist'}-ai`;
+    // Names that already end in "AI" ("Docs AI") should not produce "docs-ai-ai".
+    const stem = slug.replace(/-ai$/, '') || 'specialist';
+    let id = `${stem}-ai`;
     let counter = 2;
     while (this.get(id)) {
-      id = `${slug || 'specialist'}-${counter++}-ai`;
+      id = `${stem}-${counter++}-ai`;
     }
 
     const definition: SpecialistDefinition = {

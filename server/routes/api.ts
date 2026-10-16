@@ -19,7 +19,7 @@ import { versionStore } from '../models/versions.js';
 import { benchmarkStore } from '../benchmarks/store.js';
 
 const startedAt = Date.now();
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.2.0';
 
 
 // Validation schemas — the API rejects malformed payloads instead of trusting them.

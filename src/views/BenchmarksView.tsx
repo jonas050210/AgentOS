@@ -102,6 +102,24 @@ export function BenchmarksView({ onOpen }: { onOpen: (target: NavTarget) => void
     if (!selectedId && contextCards.length > 0) setSelectedId(contextCards[0].id);
   }, [contextCards, selectedId]);
 
+  // Load the full scorecard history together with the baseline each card was
+  // measured against, so the comparison badges and the counters below reflect
+  // recorded evidence rather than a card sitting on its own.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .scorecards({ limit: 100 })
+      .then((list) => {
+        if (cancelled) return;
+        if (list.scorecards.length > 0) setCards(list.scorecards);
+        if (list.comparisons) setComparisons((prev) => ({ ...list.comparisons, ...prev }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [contextCards]);
+
   useEffect(() => {
     if (!suiteId && suites.length > 0) setSuiteId(suites[0].id);
   }, [suites, suiteId]);
@@ -432,6 +450,12 @@ export function BenchmarksView({ onOpen }: { onOpen: (target: NavTarget) => void
                         />
                       ))}
                     </div>
+                  )}
+                  {comparison && comparison.tradeoffs.length > 0 && (
+                    <p className="mt-3 text-2xs leading-relaxed text-signal-warn">
+                      Quality decides the verdict. This version pays for its score on {comparison.tradeoffs.join(', ')} — cheaper to keep
+                      only if that cost is acceptable for the task.
+                    </p>
                   )}
                 </Card>
 

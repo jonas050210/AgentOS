@@ -450,6 +450,8 @@ export interface BenchmarkComparison {
   baselineId: string | null;
   rows: BenchmarkComparisonRow[];
   verdict: 'improved' | 'regressed' | 'unchanged' | 'no_baseline';
+  /** Metric labels the candidate pays for its verdict — e.g. latency cost. */
+  tradeoffs: string[];
   summary: string;
 }
 
