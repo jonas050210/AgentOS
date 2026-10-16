@@ -1,0 +1,15 @@
+# Runtime dependency (required): the desktop interface.
+# Everything else CodeMind needs is in the Python standard library.
+PySide6>=6.6
+
+# ---------------------------------------------------------------------------
+# Optional: real LoRA / QLoRA fine-tuning of a local coding model.
+# CodeMind runs without these; the Training view reports exactly what is missing
+# and which command would install it, and the lightweight adapter + retrieval
+# index methods work on every machine.
+#
+# Install the CUDA build that matches your driver (see https://pytorch.org):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# then:
+#   pip install transformers peft datasets accelerate bitsandbytes
+# ---------------------------------------------------------------------------
