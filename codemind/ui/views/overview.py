@@ -60,8 +60,20 @@ class OverviewView(View):
         self.tile_tasks = StatTile("Tasks", "0", sub="none active", accent=T.ACCENT, icon="◆")
         self.tile_memory = StatTile("Memory store", "0", sub="entries", accent=T.WARNING, icon="✧")
         self.tile_learning = StatTile("Learning", "—", sub="", accent=T.SUCCESS, icon="◇")
-        for index, tile in enumerate((self.tile_cpu, self.tile_ram, self.tile_gpu, self.tile_disk, self.tile_tasks, self.tile_memory, self.tile_learning)):
-            tiles.addWidget(tile, 0, index)
+        self.tile_evidence = StatTile("Evidence", "—", sub="proven work", accent=T.SUCCESS, icon="✓")
+        self.tiles = (
+            self.tile_cpu,
+            self.tile_ram,
+            self.tile_gpu,
+            self.tile_disk,
+            self.tile_tasks,
+            self.tile_memory,
+            self.tile_learning,
+            self.tile_evidence,
+        )
+        # four tiles per row: eight across one row would elide every caption
+        for index, tile in enumerate(self.tiles):
+            tiles.addWidget(tile, index // 4, index % 4)
         wrapper = QWidget()
         wrapper.setLayout(tiles)
         wrapper.setStyleSheet("background: transparent;")
@@ -152,6 +164,7 @@ class OverviewView(View):
         self._refresh_work(agent)
         self._refresh_training(training)
         self._refresh_learning(snapshot)
+        self._refresh_evidence(snapshot)
         self._refresh_activity(agent["recent"])
         self._refresh_autonomy(snapshot)
         self._refresh_alerts(snapshot)
@@ -387,6 +400,32 @@ class OverviewView(View):
             holder.setStyleSheet("background: transparent;")
             self.autonomy_body.addWidget(holder)
 
+    # -- hooks used by the command palette ---------------------------------
+    def run_autonomy_now(self) -> None:
+        """Run one autonomy session immediately (same as the button on the card)."""
+        self._run_autonomy_now()
+
+    def accept_all_proposals(self) -> None:
+        """Turn every waiting proposal into a queued task."""
+        try:
+            pending = self.app.autonomy.proposals(status="pending", limit=25)
+        except Exception as exc:
+            self.autonomy_card.set_subtitle(f"could not read proposals: {exc}")
+            return
+        if not pending:
+            self.autonomy_card.set_subtitle("no proposals waiting — nothing to accept")
+            return
+        accepted = 0
+        for proposal in pending:
+            try:
+                self.app.autonomy.accept(proposal["id"])
+                accepted += 1
+            except Exception as exc:
+                self.autonomy_card.set_subtitle(f"could not accept proposal {proposal['id']}: {exc}")
+                break
+        self.autonomy_card.set_subtitle(f"accepted {accepted} of {len(pending)} proposals — they are queued as tasks")
+        self.refresh()
+
     def _run_autonomy_now(self) -> None:
         try:
             result = self.app.autonomy.run_session(force=True)
@@ -413,6 +452,21 @@ class OverviewView(View):
         except Exception as exc:
             self.autonomy_card.set_subtitle(f"could not dismiss: {exc}")
         self.refresh()
+
+    def _refresh_evidence(self, snap: dict[str, Any]) -> None:
+        """The honesty tile: how much of the completed work carries passing evidence."""
+        quality = snap.get("quality") or {}
+        completed = int(quality.get("completed") or 0)
+        if not completed:
+            self.tile_evidence.set_value("—", sub="no completed task yet", accent=T.TEXT_FAINT)
+            return
+        unverified = int(quality.get("unverified") or 0)
+        rate = float(quality.get("verified_rate") or 0.0) * 100
+        accent = T.SUCCESS if unverified == 0 else T.WARNING
+        sub = f"{quality.get('verified', 0)} of {completed} with passing checks"
+        if unverified:
+            sub += f" · {unverified} unproven"
+        self.tile_evidence.set_number(rate, lambda value: f"{value:.0f}%", sub=sub, accent=accent)
 
     def _refresh_activity(self, recent: list[dict[str, Any]]) -> None:
         rows = []
@@ -454,6 +508,16 @@ class OverviewView(View):
             alerts.append(("External storage", f"{storage['pending_sync']} item(s) waiting to sync to the USB drive.", T.ACCENT))
         for warning in snap["app"].get("config_warnings") or []:
             alerts.append(("Settings", shorten(warning, 90), T.WARNING))
+        quality = snap.get("quality") or {}
+        if quality.get("unverified"):
+            names = ", ".join(claim.get("task_id", "")[:8] for claim in (quality.get("unverified_tasks") or [])[:3])
+            alerts.append(
+                (
+                    "Unproven claims",
+                    f"{quality['unverified']} completed task(s) without passing evidence: {names} — open them and check the verification.",
+                    T.WARNING,
+                )
+            )
         if not alerts:
             self.alerts_body.addWidget(EmptyState("Nothing needs you", "No failures, no pending approvals, no health problems.", icon="✓"))
         for title, detail, color_value in alerts[:6]:

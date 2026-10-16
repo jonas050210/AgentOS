@@ -83,18 +83,43 @@ class FileJournal:
         self.task_id = task_id
         self.diffs: list[dict[str, Any]] = []
         self._before: dict[str, str] = {}
+        self._existed: dict[str, bool] = {}
+        self._stored: set[str] = set()
 
     def snapshot(self, path: Path) -> None:
+        """Remember the state of a file *before* the tool writes to it."""
         key = str(path)
         if key in self._before:
             return
+        exists = path.exists()
+        self._existed[key] = exists
         try:
-            self._before[key] = read_text(path) if path.exists() else ""
+            self._before[key] = read_text(path) if exists else ""
         except OSError:
             self._before[key] = ""
 
     def before(self, path: Path) -> str:
         return self._before.get(str(path), "")
+
+    def store_before(self, path: Path, existed: bool, content: str) -> None:
+        """Persist the pre-image in the database so the task can be rolled back after a restart.
+
+        The on-disk backup below is a convenience copy; this row is the authoritative record and
+        survives everything the sandbox does.
+        """
+        try:
+            self.db.insert(
+                "task_backups",
+                {
+                    "task_id": self.task_id,
+                    "ts": time.time(),
+                    "path": str(path),
+                    "existed": 1 if existed else 0,
+                    "content": content,
+                },
+            )
+        except Exception as exc:  # pragma: no cover - a failed backup must not break the write
+            log.warning("could not store the pre-image of a file", cm={"path": str(path), "error": str(exc)})
 
     def backup(self, path: Path) -> Path | None:
         if not path.exists():
@@ -109,6 +134,9 @@ class FileJournal:
             return None
 
     def record(self, path: Path, new_text: str, kind: str) -> dict[str, Any]:
+        key = str(path)
+        # existence has to come from the snapshot taken before the write, not from the current state
+        existed = self._existed.get(key, path.exists())
         old = self.before(path)
         self.snapshot(path)
         old = self._before.get(str(path), old)
@@ -122,6 +150,10 @@ class FileJournal:
             "diff": diff,
         }
         self.diffs.append(entry)
+        if key not in self._stored:
+            # the earliest pre-image is the one a rollback has to restore
+            self.store_before(path, existed, self._before.get(key, ""))
+            self._stored.add(key)
         try:
             self.db.insert(
                 "task_diffs",

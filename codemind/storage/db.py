@@ -294,6 +294,17 @@ SCHEMA: list[str] = [
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS task_backups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL,
+        ts REAL NOT NULL,
+        path TEXT NOT NULL,
+        existed INTEGER NOT NULL DEFAULT 1,
+        content TEXT
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_task_backups ON task_backups(task_id, path);",
+    """
     CREATE TABLE IF NOT EXISTS tool_calls (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id TEXT,

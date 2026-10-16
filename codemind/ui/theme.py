@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -32,13 +33,85 @@ BG = "#0C0E14"
 BG_RAISED = "#12151D"
 SURFACE = "#161A23"
 
+# --------------------------------------------------------------------------- appearance
+# Three surface treatments, one accent, one motion level. The values here are the single source of
+# truth for how the shell looks; the Settings view writes the config, `apply_appearance` reads it.
+
+
+@dataclass
+class Appearance:
+    mode: str = "liquid_glass"
+    glass: float = 0.72
+    accent: str = "#6EA8FE"
+    motion: str = "full"
+
+
+SURFACES: dict[str, dict[str, Any]] = {
+    # name -> page gradient (top, bottom), glass tint, shadow strength
+    "liquid_glass": {"top": "#0B0E16", "bottom": "#080A10", "glass": 1.0, "shadow": 0.75, "hairline": 1.0},
+    "graphite": {"top": "#101114", "bottom": "#0A0B0D", "glass": 0.78, "shadow": 0.9, "hairline": 0.85},
+    "midnight": {"top": "#05070E", "bottom": "#02030A", "glass": 1.18, "shadow": 1.0, "hairline": 1.15},
+}
+
+_APPEARANCE = Appearance()
+
+
+def appearance() -> Appearance:
+    return _APPEARANCE
+
+
+def apply_appearance(config: Any = None) -> Appearance:
+    """Adopt the appearance settings from the application config (or explicit overrides)."""
+    global _APPEARANCE, ACCENT, ACCENT_SOFT, ACCENT_GLOW
+    mode = "liquid_glass"
+    glass = 0.72
+    accent = "#5AC8FA"
+    motion = "full"
+    if config is not None:
+        app = getattr(config, "app", config)
+        mode = str(getattr(app, "theme_mode", mode) or mode)
+        glass = float(getattr(app, "glass_intensity", glass) or glass)
+        accent = str(getattr(app, "accent", accent) or accent)
+        motion = str(getattr(app, "motion", motion) or motion)
+    if mode not in SURFACES:
+        mode = "liquid_glass"
+    if not QColor(accent).isValid():
+        accent = "#5AC8FA"
+    if motion not in ("full", "reduced", "off"):
+        motion = "full"
+    _APPEARANCE = Appearance(mode=mode, glass=max(0.0, min(1.0, glass)), accent=accent, motion=motion)
+    # the module level accent is referenced by widget defaults and every style string
+    ACCENT = accent
+    ACCENT_SOFT = _rgba(accent, 0.16)
+    ACCENT_GLOW = _rgba(accent, 0.55)
+    return _APPEARANCE
+
+
+def _rgba(hex_value: str, alpha: float) -> str:
+    color_value = QColor(hex_value)
+    return f"rgba({color_value.red()}, {color_value.green()}, {color_value.blue()}, {alpha})"
+
+
+def surface() -> dict[str, Any]:
+    return SURFACES.get(_APPEARANCE.mode, SURFACES["liquid_glass"])
+
+
+def page_gradient() -> tuple[str, str]:
+    preset = surface()
+    return str(preset["top"]), str(preset["bottom"])
+
+
+def glass_alpha(scale: float = 1.0) -> float:
+    """Combined glass strength: the preset character scaled by the user's intensity slider."""
+    return max(0.0, min(1.6, float(surface().get("glass", 1.0)) * (_APPEARANCE.glass / 0.72) * scale))
+
 TEXT = "#F3F5F9"
 TEXT_SOFT = "rgba(243, 245, 249, 0.66)"
 TEXT_FAINT = "rgba(243, 245, 249, 0.42)"
 
-ACCENT = "#6EA8FE"
-ACCENT_SOFT = "rgba(110, 168, 254, 0.16)"
-ACCENT_GLOW = "rgba(110, 168, 254, 0.55)"
+ACCENT = "#5AC8FA"  # mirrors AppSettings.accent, the single source of truth
+ACCENT_SOFT = "rgba(90, 200, 250, 0.16)"
+ACCENT_GLOW = "rgba(90, 200, 250, 0.55)"
 SUCCESS = "#4ADE80"
 WARNING = "#FBBF5B"
 DANGER = "#FF6B6B"
@@ -193,11 +266,12 @@ def paint_glass(painter: QPainter, rect: QRectF, *, radius: int = RADIUS, tint: 
     painter.setRenderHint(QPainter.Antialiasing, True)
     path = glass_path(rect, radius)
 
-    # body: gentle top-to-bottom light falloff
+    # body: gentle top-to-bottom light falloff, scaled by the chosen surface + glass intensity
+    strength = glass_alpha()
     body = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    body.setColorAt(0.0, color(GLASS_TOP if tint is None else tint, 1.35))
-    body.setColorAt(0.55, color(GLASS_BOTTOM if tint is None else tint, 0.85))
-    body.setColorAt(1.0, color(GLASS_BOTTOM if tint is None else tint, 0.55))
+    body.setColorAt(0.0, color(GLASS_TOP if tint is None else tint, 1.35 * strength))
+    body.setColorAt(0.55, color(GLASS_BOTTOM if tint is None else tint, 0.85 * strength))
+    body.setColorAt(1.0, color(GLASS_BOTTOM if tint is None else tint, 0.55 * strength))
     painter.fillPath(path, QBrush(body))
 
     # top-left sheen (the "glass" reflection)
@@ -214,9 +288,10 @@ def paint_glass(painter: QPainter, rect: QRectF, *, radius: int = RADIUS, tint: 
         painter.fillPath(path, QBrush(accent_glow))
 
     # hairline border: brighter at the top, fades towards the bottom
+    hairline = float(surface().get("hairline", 1.0))
     border = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-    border.setColorAt(0.0, color(HAIRLINE_STRONG))
-    border.setColorAt(1.0, color(HAIRLINE, 0.6))
+    border.setColorAt(0.0, color(HAIRLINE_STRONG, hairline))
+    border.setColorAt(1.0, color(HAIRLINE, 0.6 * hairline))
     pen = QPen(QBrush(border), 1.0)
     painter.setPen(pen)
     painter.drawPath(glass_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius))

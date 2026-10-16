@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import threading
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -275,14 +276,14 @@ class Config:
         return {name: _section_to_dict(getattr(self, name)) for name in SECTIONS} | {"schema_version": self.schema_version}
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any] | None) -> "Config":
+    def from_dict(cls, payload: Mapping[str, Any] | None, warnings: list[str] | None = None) -> "Config":
         config = cls()
         if not payload:
             return config
         for name, section_cls in SECTIONS.items():
             raw = payload.get(name)
             if isinstance(raw, Mapping):
-                setattr(config, name, _section_from_dict(section_cls, raw))
+                setattr(config, name, _section_from_dict(section_cls, raw, name, warnings))
         try:
             config.schema_version = int(payload.get("schema_version", config.schema_version))
         except (TypeError, ValueError):
@@ -299,7 +300,10 @@ class Config:
         section, _, name = dotted.partition(".")
         if not name:
             raise ConfigError(f"expected 'section.field', got {dotted!r}")
-        return getattr(self.section(section), name)
+        target = self.section(section)
+        if name not in {f.name for f in fields(target)}:
+            raise ConfigError(f"unknown setting {dotted!r}")
+        return getattr(target, name)
 
     def set(self, dotted: str, value: Any) -> None:
         section, _, name = dotted.partition(".")
@@ -371,15 +375,37 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _section_from_dict(section_cls: type, payload: Mapping[str, Any]) -> Any:
+def _section_from_dict(
+    section_cls: type, payload: Mapping[str, Any], section: str = "", warnings: list[str] | None = None
+) -> Any:
+    """Build one settings section, keeping the rest of the file when a single value is unusable.
+
+    A hand-edited settings file with one bad number used to discard *everything* the user had
+    configured. Now only the offending value falls back to its default, and the reason is reported.
+    """
+    notes = warnings if warnings is not None else []
+    label = section or section_cls.__name__.removesuffix("Settings").lower()
     kwargs: dict[str, Any] = {}
     for spec in fields(section_cls):
-        if spec.name in payload:
-            kwargs[spec.name] = _coerce(dict(spec.metadata or meta(spec.name)), payload[spec.name], f"{section_cls.__name__}.{spec.name}")
+        if spec.name not in payload:
+            continue
+        key = f"{label}.{spec.name}"
+        descriptor = dict(spec.metadata or meta(spec.name))
+        try:
+            kwargs[spec.name] = _coerce(descriptor, payload[spec.name], key)
+        except ConfigError as exc:
+            notes.append(f"{key} kept its default: {exc}")
     instance = section_cls(**kwargs)
     for spec in fields(section_cls):
+        key = f"{label}.{spec.name}"
+        descriptor = dict(spec.metadata or meta(spec.name))
         value = getattr(instance, spec.name)
-        setattr(instance, spec.name, _validate_value(f"{section_cls.__name__}.{spec.name}", dict(spec.metadata or meta(spec.name)), value))
+        try:
+            setattr(instance, spec.name, _validate_value(key, descriptor, value))
+        except ConfigError as exc:
+            default_value = getattr(section_cls(), spec.name)
+            setattr(instance, spec.name, default_value)
+            notes.append(f"{key} was reset to {default_value!r}: {exc}")
     return instance
 
 
@@ -434,6 +460,10 @@ def _validate_value(key: str, descriptor: Mapping[str, Any], value: Any) -> Any:
             raise ConfigError(f"{key} must be ≥ {minimum} (got {value})")
         if maximum is not None and value > maximum:
             raise ConfigError(f"{key} must be ≤ {maximum} (got {value})")
+    if kind == "color" and value:
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", str(value).strip()):
+            raise ConfigError(f"{key} must be a #rrggbb colour (got {value!r})")
+        value = str(value).strip()
     if kind in ("path", "str") and value:
         if "\x00" in value:
             raise ConfigError(f"{key} contains a null byte")
@@ -465,7 +495,7 @@ class ConfigStore:
             config = Config()
         else:
             try:
-                config = Config.from_dict(payload)
+                config = Config.from_dict(payload, errors)
             except ConfigError as exc:
                 errors.append(f"settings were reset to defaults: {exc}")
                 config = Config()

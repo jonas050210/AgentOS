@@ -84,6 +84,28 @@ def main() -> int:
         time.sleep(0.1)
     window.grab().save(str(target / "00-window.png"))
     print(f"window           -> {target / '00-window.png'}")
+    # the command palette is a dialog: render it without running its modal loop
+    from codemind.ui.command_palette import CommandPalette, build_commands
+
+    palette = CommandPalette(build_commands(window), window)
+    palette.query.setText("")
+    for _ in range(6):
+        qt_app.processEvents()
+        time.sleep(0.05)
+    # the dialog is translucent: composite it over the window so the screenshot shows what a user sees
+    backdrop = window.grab()
+    overlay = palette.grab()
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QPainter
+
+    painter = QPainter(backdrop)
+    painter.drawPixmap(
+        QPoint(max(0, (backdrop.width() - overlay.width()) // 2), max(0, (backdrop.height() - overlay.height()) // 2 - 40)),
+        overlay,
+    )
+    painter.end()
+    backdrop.save(str(target / "08-command-palette.png"))
+    print(f"palette          -> {target / '08-command-palette.png'}")
     app.shutdown()
     return 1 if failures else 0
 

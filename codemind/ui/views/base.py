@@ -76,11 +76,26 @@ class View(QWidget):
         from PySide6.QtGui import QLinearGradient, QPainter
 
         painter = QPainter(self)
+        top, bottom = T.page_gradient()
         gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0.0, T.color("#0B0E16"))
-        gradient.setColorAt(1.0, T.color("#080A10"))
+        gradient.setColorAt(0.0, T.color(top))
+        gradient.setColorAt(1.0, T.color(bottom))
         painter.fillRect(self.rect(), gradient)
         painter.end()
+
+    def repaint_theme(self) -> None:
+        """Re-apply colours after the appearance changed, without rebuilding the view."""
+        self.header.setStyleSheet(f"background: rgba(0,0,0,0.18); border-bottom: 1px solid {T.HAIRLINE};")
+        self.title_label.setStyleSheet(f"color: {T.TEXT}; background: transparent;")
+        self.subtitle_label.setStyleSheet(f"color: {T.TEXT_SOFT}; background: transparent;")
+        hook = getattr(self, "restyle", None)
+        if callable(hook):
+            try:
+                hook()
+            except Exception:  # pragma: no cover - a restyle must never break the window
+                pass
+        for widget in self.findChildren(QWidget):
+            widget.update()
 
     def set_subtitle(self, text: str) -> None:
         self.subtitle_label.setText(text)

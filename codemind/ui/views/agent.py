@@ -12,13 +12,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
-from codemind.events import Topics
+from codemind.events import BUS, Topics
 from codemind.ui import theme as T
 from codemind.ui.views.base import SectionHeader, View
 from codemind.ui.widgets.glass import (
@@ -82,6 +83,8 @@ class AgentView(View):
         controls.addWidget(ActionButton("Cancel task", tone="danger", on_click=self.cancel_current))
         controls.addWidget(ActionButton("Resume", on_click=self.resume_selected))
         controls.addWidget(ActionButton("Retry", on_click=self.retry_selected))
+        controls.addWidget(ActionButton("Passport", on_click=self.export_passport))
+        controls.addWidget(ActionButton("Roll back", tone="danger", on_click=self.rollback_last))
         left.addLayout(controls)
         row.addLayout(left, 1)
         composer.content.addLayout(row)
@@ -285,6 +288,81 @@ class AgentView(View):
         except Exception as exc:
             self.transcript.add("error", f"Retry failed: {exc}")
 
+    # -- hooks used by the command palette and the shortcuts -----------------
+    def focus_prompt(self) -> None:
+        """Put the cursor where a new task is typed."""
+        self.prompt.setFocus()
+
+    def cancel_active(self) -> None:
+        self.cancel_current()
+
+    def _evidence_task(self) -> str:
+        """The task the evidence actions apply to: the selected one, else the active one."""
+        return self._selection or self.current_task_id
+
+    def export_passport(self) -> None:
+        """Write the change passport (plan, commands, diffs, checks, hashes) of a task."""
+        task_id = self._evidence_task()
+        if not task_id:
+            self.transcript.add("system", "Select a task in the history first — a passport belongs to one run.")
+            return
+        try:
+            result = self.app.write_passport(task_id)
+        except Exception as exc:
+            self.transcript.add("error", f"Could not write the passport: {exc}")
+            return
+        note = "chain verified" if result.get("chain_ok") else "CHAIN BROKEN"
+        self.transcript.add(
+            "system",
+            f"Change passport for {task_id[:8]} written to {result['files'].get('md')} "
+            f"({result['files_changed']} file(s), {result['checks']} check(s), {note}, root {result['root'][:12]}…).",
+        )
+        BUS.publish(Topics.TASK_LOG, task_id=task_id, kind="passport", message="change passport exported", payload=result)
+
+    def rollback_last(self) -> None:
+        """Restore the files a finished task changed to their state before the task."""
+        task_id = self._evidence_task()
+        if not task_id:
+            self.transcript.add("system", "Select a task in the history first — a rollback belongs to one run.")
+            return
+        from codemind.agent.rollback import RollbackRefused
+
+        try:
+            plan = self.app.rollback_plan(task_id)
+        except RollbackRefused as exc:
+            self.transcript.add("system", f"Not rolled back: {exc}")
+            return
+        except Exception as exc:
+            self.transcript.add("error", f"Could not plan the rollback: {exc}")
+            return
+        question = QMessageBox(self)
+        question.setWindowTitle("Roll back this task?")
+        question.setIcon(QMessageBox.Warning)
+        question.setText(
+            f"Task {task_id[:8]} changed {plan['count']} file(s): "
+            f"{plan['restores']} will be restored, {plan['deletes']} deleted again."
+        )
+        question.setInformativeText(
+            "The pre-images recorded before the task wrote anything are put back.\n"
+            + ("Files changed since the task finished: " + ", ".join(plan["modified_since_task"]) if plan["modified_since_task"] else "No file was touched since then.")
+        )
+        question.setStandardButtons(QMessageBox.Cancel | QMessageBox.Ok)
+        question.setDefaultButton(QMessageBox.Cancel)
+        if question.exec() != QMessageBox.Ok:
+            self.transcript.add("system", "Rollback cancelled — nothing was changed.")
+            return
+        try:
+            result = self.app.rollback_task(task_id)
+        except Exception as exc:
+            self.transcript.add("error", f"Rollback failed: {exc}")
+            return
+        self.transcript.add(
+            "system",
+            f"Rolled back {result['count']} file(s) of task {task_id[:8]}"
+            + (f", skipped {len(result['skipped'])}: {result['skipped'][0]['reason']}" if result["skipped"] else "."),
+        )
+        self.refresh()
+
     def _open_selected(self) -> None:
         if self._selection:
             self.current_task_id = self._selection
@@ -373,7 +451,7 @@ class AgentView(View):
         projects = self.app.knowledge.projects(limit=40)
         current = self.project.currentText()
         known = [project.get("path", "") for project in projects]
-        extra = [path for path in (self.app.config.storage.projects_root, "/tmp/sampleproj") if path and path not in known]
+        extra = [path for path in (self.app.config.storage.projects_root,) if path and path not in known]
         self.project.blockSignals(True)
         self.project.clear()
         for path in known + extra:

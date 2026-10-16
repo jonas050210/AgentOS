@@ -197,6 +197,208 @@ class ViewTests(TempDataCase):
         finally:
             window.close()
 
+class PaletteTests(TempDataCase):
+    """The command palette must offer the real actions, and only real ones."""
+
+    def setUp(self) -> None:
+        self.reset_storage()
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.qt_ok, cls.qt_reason = _qt_available()
+
+    def _window(self):
+        from codemind.ui.main_window import MainWindow
+
+        app = self.make_app(background=False)
+        window = MainWindow(app)
+        return app, window
+
+    def test_every_listed_action_is_callable_and_complete(self) -> None:
+        if not self.qt_ok:
+            self.skipTest(f"{self.qt_reason} (run with ./.venv/bin/python -m unittest)")
+        from codemind.ui.command_palette import build_commands
+
+        _app, window = self._window()
+        try:
+            commands = build_commands(window)
+            titles = [command.title for command in commands]
+            self.assertGreaterEqual(len(commands), 12)
+            for command in commands:
+                self.assertTrue(command.title, "a command without a title cannot be found")
+                self.assertTrue(callable(command.run), f"{command.title} has nothing to run")
+            for expected in (
+                "Refresh this view",
+                "Keyboard shortcuts",
+                "Open data folder",
+                "Copy diagnostics",
+                "Quit CodeMind",
+                "Focus the task prompt",
+                "Cancel the active task",
+                "Export the change passport",
+                "Roll back a task",
+                "Run an autonomy session now",
+                "Start a training run",
+                "New isolated workspace",
+            ):
+                self.assertIn(expected, titles, f"the palette is missing {expected!r}")
+            for name in VIEW_NAMES:
+                self.assertIn(f"Open {name}", titles, "every view must be reachable from the palette")
+        finally:
+            window.close()
+
+    def test_palette_filters_and_runs(self) -> None:
+        if not self.qt_ok:
+            self.skipTest(self.qt_reason)
+        from codemind.ui.command_palette import CommandPalette, build_commands
+
+        _app, window = self._window()
+        try:
+            palette = CommandPalette(build_commands(window), window)
+            palette.query.setText("training")
+            names = [command.title for command in palette._shown]
+            self.assertIn("Start a training run", names)
+            self.assertTrue(all("training" in command.haystack() for command in palette._shown))
+
+            # typing the wrong thing must not silently offer everything
+            palette.query.setText("zzzz-no-such-command")
+            self.assertEqual(palette._shown, [])
+
+            # selecting a row really switches the view
+            palette.query.setText("open sandbox")
+            palette.results.setCurrentRow(0)
+            palette._run_selected()
+            self.assertEqual(window.stack.currentWidget(), window.views["Sandbox"])
+        finally:
+            window.close()
+
+
+class AppearanceTests(TempDataCase):
+    """The appearance settings in the config file have to reach the pixels."""
+
+    def setUp(self) -> None:
+        self.reset_storage()
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.qt_ok, cls.qt_reason = _qt_available()
+
+    def test_surface_accent_and_motion_come_from_the_settings(self) -> None:
+        if not self.qt_ok:
+            self.skipTest(self.qt_reason)
+        from codemind.ui import anim, theme as T
+        from codemind.ui.main_window import MainWindow
+
+        app = self.make_app(background=False)
+        app.update_settings(
+            {
+                "app.theme_mode": "midnight",
+                "app.glass_intensity": 0.35,
+                "app.accent": "#FF8A4C",
+                "app.motion": "reduced",
+                "app.start_view": "sandbox",
+            }
+        )
+        window = MainWindow(app)
+        try:
+            self.assertEqual(T.appearance().mode, "midnight")
+            self.assertAlmostEqual(T.appearance().glass, 0.35, places=3)
+            self.assertEqual(T.ACCENT.upper(), "#FF8A4C")
+            self.assertEqual(T.page_gradient(), ("#05070E", "#02030A"))
+            self.assertLess(T.glass_alpha(), 1.0)
+            self.assertFalse(anim.full_motion())
+            self.assertEqual(anim.duration(300), 180, "reduced motion must shorten animations")
+            self.assertIn("reduced", anim.describe_motion())
+            # the start view setting decides which page is open
+            self.assertEqual(window.stack.currentWidget(), window.views["Sandbox"])
+            self.assertTrue(window.buttons[VIEW_NAMES.index("Sandbox")].isChecked())
+
+            # changing the accent while the window is open must reach the shell, not only the config
+            app.update_settings({"app.accent": "#34C759"})
+            window.apply_appearance()
+            self.assertEqual(T.ACCENT.upper(), "#34C759")
+
+            # motion off means every state appears instantly
+            app.update_settings({"app.motion": "off"})
+            self.assertFalse(anim.enabled())
+            self.assertEqual(anim.duration(400), 0)
+            self.assertIn("off", anim.describe_motion())
+        finally:
+            window.close()
+
+    def test_window_geometry_is_remembered(self) -> None:
+        if not self.qt_ok:
+            self.skipTest(self.qt_reason)
+        from codemind.ui.main_window import MainWindow
+
+        app = self.make_app(background=False)
+        window = MainWindow(app)
+        window.resize(1180, 800)
+        window.close()
+        stored = app.config.app.window or {}
+        self.assertEqual((stored.get("w"), stored.get("h")), (1180, 800))
+
+        second = MainWindow(app)
+        try:
+            self.assertEqual((second.width(), second.height()), (1180, 800), "the window must reopen where it was")
+        finally:
+            second.close()
+
+        # with the setting switched off the geometry is deliberately not restored
+        app.update_settings({"app.restore_geometry": False})
+        third = MainWindow(app)
+        try:
+            self.assertNotEqual((third.width(), third.height()), (1180, 800))
+        finally:
+            third.close()
+
+
+class RenderingTests(TempDataCase):
+    """The glass surfaces must actually paint something (a blank pane is the classic Qt mistake)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.qt_ok, cls.qt_reason = _qt_available()
+
+    def test_cards_and_views_paint_a_background(self) -> None:
+        if not self.qt_ok:
+            self.skipTest(self.qt_reason)
+        from PySide6.QtGui import QPixmap
+
+        from codemind.ui import theme as T
+        from codemind.ui.views.base import View
+        from codemind.ui.widgets.glass import Card, Sparkline, StatTile
+
+        app = self.make_app(background=False)
+        card = Card("Title", "Subtitle")
+        card.resize(320, 140)
+        tile = StatTile("CPU", "0%")
+        tile.set_number(37.5, lambda value: f"{value:.0f}%")
+        self.assertEqual(tile.value.text(), "38%")
+        spark = Sparkline()
+        spark.set_values([1, 5, 3, 9])
+        self.assertEqual(spark._values, [1.0, 5.0, 3.0, 9.0])
+        for widget in (card, tile, spark):
+            widget.show()
+            pixmap = widget.grab()
+            self.assertFalse(pixmap.isNull())
+            image = pixmap.toImage()
+            colors = {image.pixel(x, y) for x in range(0, image.width(), 17) for y in range(0, image.height(), 13)}
+            self.assertGreater(len(colors), 1, f"{type(widget).__name__} painted a flat single colour")
+        view = View(app)
+        view.resize(600, 400)
+        view.show()
+        grabbed = view.grab().toImage()
+        top = grabbed.pixelColor(5, 5)
+        bottom = grabbed.pixelColor(5, view.height() - 5)
+        self.assertNotEqual(top.name(), T.TEXT, "the view must paint its own background")
+        self.assertNotEqual((top.red(), top.green(), top.blue()), (bottom.red(), bottom.green(), bottom.blue()),
+                            "the page gradient must differ from top to bottom")
+
+
 
 if __name__ == "__main__":
     unittest.main()

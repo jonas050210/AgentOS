@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -230,6 +231,31 @@ class SandboxView(View):
             job_id = getattr(self, "_job_ids", {}).get(row[0] if row else "", "")
         if job_id:
             self.app.jobs.stop(job_id)
+        self.refresh()
+
+    def create_workspace(self) -> None:
+        """Copy a project into an isolated workspace without starting a task."""
+        from PySide6.QtWidgets import QFileDialog
+
+        start_dir = str(self.app.config.storage.projects_root or "")
+        try:
+            projects = self.app.knowledge.projects(limit=1)
+            if projects and projects[0].get("path"):
+                start_dir = str(projects[0]["path"])
+        except Exception:
+            pass
+        if start_dir and not Path(start_dir).exists():
+            start_dir = ""
+        chosen = QFileDialog.getExistingDirectory(self, "Select the project to isolate", start_dir)
+        if not chosen:
+            self.workspace_hint.setText("no project selected")
+            return
+        try:
+            workspace = self.app.sandbox.create_workspace(chosen, mode=self.app.config.sandbox.workspace_mode)
+        except Exception as exc:
+            self.workspace_hint.setText(f"could not create a workspace: {exc}")
+            return
+        self.workspace_hint.setText(f"workspace for {workspace.id} ready at {workspace.path}")
         self.refresh()
 
     def stop_all_jobs(self) -> None:

@@ -162,8 +162,11 @@ class JobManager:
         if len(job.tail) > 400:
             job.tail = job.tail[-400:]
         try:
-            if Path(job.log_path).stat().st_size < self.max_log_bytes:
-                with open(job.log_path, "a", encoding="utf-8") as handle:
+            path = Path(job.log_path)
+            # stat() on a missing file raises: without the exists() check the first line of every job
+            # was swallowed and the log file never appeared at all
+            if not path.exists() or path.stat().st_size < self.max_log_bytes:
+                with open(path, "a", encoding="utf-8") as handle:
                     handle.write(f"{stream}: {line}\n")
         except OSError:
             pass

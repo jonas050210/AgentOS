@@ -82,8 +82,25 @@ class GlassPanel(QWidget):
         rect = QRectF(self.rect()).adjusted(6, 6, -6, -6)
         if self._shadow:
             T.paint_shadow(painter, rect.translated(0, 1), radius=self._radius, strength=0.75)
-        T.paint_glass(painter, rect, radius=self._radius, glow=self._glow)
+        glow = self._glow
+        flash = getattr(self, "_flash_t", 0.0)
+        if flash > 0:
+            glow = self._flash_tone or glow or T.ACCENT
+        T.paint_glass(painter, rect, radius=self._radius, glow=glow)
         painter.end()
+
+    def flash(self, tone: str | None = None, ms: int = 700) -> None:
+        """Briefly light the pane up — used when a value visibly changed."""
+        from codemind.ui import anim
+
+        self._flash_tone = tone or self._glow or T.ACCENT
+        if not anim.enabled():
+            return
+        anim.Tween(1.0, 0.0, self._set_flash, ms=ms, parent=self)
+
+    def _set_flash(self, value: float) -> None:
+        self._flash_t = float(value)
+        self.update()
 
 
 class Card(GlassPanel):
@@ -231,18 +248,55 @@ class StatTile(GlassPanel):
         self.value.setStyleSheet(f"color: {T.TEXT}; background: transparent;")
         self.sub = ElidedLabel(sub, size=10)
         self.sub.setVisible(bool(sub))
+        self._number: float | None = None
+        self._flash_t = 0.0
+        self._flash_tone: str | None = None
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.body.addLayout(top)
         self.body.addWidget(self.value)
         self.body.addWidget(self.sub)
 
     def set_value(self, value: str, *, sub: str | None = None, accent: str | None = None) -> None:
-        self.value.setText(value)
+        if value != self.value.text():
+            self.value.setText(value)
         if sub is not None:
-            self.sub.setText(sub)
-            self.sub.setVisible(bool(sub))
+            if sub != self.sub.full_text():
+                self.sub.setText(sub)
+                self.sub.setVisible(bool(sub))
         if accent:
             self._accent = accent
             self.update()
+
+    def set_number(
+        self,
+        value: float | int,
+        formatter: Callable[[float], str] | None = None,
+        *,
+        sub: str | None = None,
+        accent: str | None = None,
+        unit: str = "",
+    ) -> None:
+        """Set a numeric value, counting up/down from the previous one (unless motion is off)."""
+        from codemind.ui import anim
+
+        target = float(value)
+        format_value = formatter or (lambda number: f"{number:,.0f}{unit}")
+        try:
+            previous = float(str(self._number))
+        except (TypeError, ValueError):
+            previous = target
+        if previous == target:
+            self.set_value(format_value(target), sub=sub, accent=accent)
+            return
+        if getattr(self, "_number_tween", None) is not None:
+            animation = getattr(self._number_tween, "_animation", None)
+            if animation is not None:
+                animation.stop()
+        self._number_tween = anim.animate_number(self.value.setText, previous, target, format_value, parent=self)
+        self._number = target
+        self.set_value(format_value(target), sub=sub, accent=accent)
+        if anim.enabled():
+            self.flash(accent or self._accent)
 
 
 class Sparkline(QWidget):
@@ -251,25 +305,43 @@ class Sparkline(QWidget):
     def __init__(self, *, color_value: str = T.ACCENT, height: int = 42, fill: bool = True, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._values: list[float] = []
+        self._display: list[float] = []
         self._color = color_value
         self._fill = fill
         self._ceiling: float | None = None
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-    def set_values(self, values: Sequence[float], *, ceiling: float | None = None) -> None:
-        self._values = [float(v) for v in values][-240:]
+    def set_values(self, values: Sequence[float], *, ceiling: float | None = None, animate: bool = True) -> None:
+        incoming = [float(v) for v in values][-240:]
         self._ceiling = ceiling
-        self.update()
+        from codemind.ui import anim
+
+        previous = list(self._display) if self._display else list(self._values)
+        self._values = incoming
+        if not animate or not anim.enabled() or not previous or len(previous) != len(incoming):
+            self._display = list(incoming)
+            self.update()
+            return
+        if previous == incoming:
+            self.update()
+            return
+
+        def _frame(t: float) -> None:
+            self._display = [old + (new - old) * t for old, new in zip(previous, incoming)]
+            self.update()
+
+        anim.Tween(0.0, 1.0, _frame, ms=420, parent=self)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = QRectF(self.rect()).adjusted(1, 3, -1, -3)
+        series = self._display or self._values
         if self._ceiling:
-            values = [min(self._ceiling, v) / self._ceiling for v in self._values]
+            values = [min(self._ceiling, v) / self._ceiling for v in series]
         else:
-            values = self._values
+            values = series
         if not values:
             painter.setPen(QPen(T.color(T.TEXT_FAINT)))
             painter.setFont(T.font(10))
@@ -307,17 +379,31 @@ class BarMeter(QWidget):
         self._caption = caption
         self._color = color_value
         self._value = 0.0
+        self._display = 0.0
         self._text = ""
         self.setFixedHeight(34)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-    def set_value(self, value: float, *, text: str | None = None, color_value: str | None = None) -> None:
-        self._value = max(0.0, min(1.0, value))
+    def set_value(self, value: float, *, text: str | None = None, color_value: str | None = None, animate: bool = True) -> None:
+        target = max(0.0, min(1.0, float(value)))
         if text is not None:
             self._text = text
         if color_value:
             self._color = color_value
-        self.update()
+        from codemind.ui import anim
+
+        start = self._display
+        self._value = target  # the readable value is never animated, only the drawn fill
+        if not animate or not anim.enabled() or abs(target - start) < 0.002:
+            self._display = target
+            self.update()
+            return
+
+        def _frame(t: float) -> None:
+            self._display = start + (target - start) * t
+            self.update()
+
+        anim.Tween(0.0, 1.0, _frame, ms=380, parent=self)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -328,7 +414,7 @@ class BarMeter(QWidget):
         right = self._text or f"{self._value * 100:.0f}%"
         painter.setPen(QPen(T.color(T.TEXT)))
         painter.drawText(QRectF(0, 0, self.width(), 15), Qt.AlignRight | Qt.AlignVCenter, right)
-        T.paint_progress(painter, QRectF(0, 19, self.width(), 6), self._value, color_value=self._color)
+        T.paint_progress(painter, QRectF(0, 19, self.width(), 6), self._display, color_value=self._color)
         painter.end()
 
 
@@ -390,6 +476,7 @@ class KeyValue(QWidget):
         self.value.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.key, 0, Qt.AlignTop)
         layout.addWidget(self.value, 1)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self._value_color = value_color
 
     def set_value(self, value: str, *, color_value: str | None = None) -> None:
@@ -419,8 +506,10 @@ class EmptyState(QWidget):
         self.detail.setWordWrap(True)
         for widget, align in ((self.icon, Qt.AlignLeft), (self.title, Qt.AlignLeft), (self.detail, Qt.AlignLeft)):
             widget.setAlignment(align)
+            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             layout.addWidget(widget)
         layout.addStretch(1)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
 
 class FadeIn:

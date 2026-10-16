@@ -188,6 +188,36 @@ class CodeMindApp:
     def wait_for_hardware(self, timeout: float = 90.0) -> bool:
         return self._hardware_ready.wait(timeout)
 
+    def rescan_hardware(self) -> None:
+        """Probe the machine again (new GPU driver, extra disk, different USB drive)."""
+        self._hardware_ready.clear()
+        thread = threading.Thread(target=self._probe_hardware, name="codemind-hardware-rescan", daemon=True)
+        thread.start()
+
+    # -- evidence ---------------------------------------------------------
+    def quality_report(self, limit: int = 200) -> dict[str, Any]:
+        """How much of the reported work is actually proven (see codemind.report.quality)."""
+        from codemind.report.quality import honesty_report
+
+        return honesty_report(self, limit=limit)
+
+    def write_passport(self, task_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Write the change passport of a task (see codemind.report.passport)."""
+        from codemind.report.passport import write_passport
+
+        return write_passport(self, task_id, **kwargs)
+
+    def rollback_task(self, task_id: str, *, force: bool = False) -> dict[str, Any]:
+        """Restore the files a task changed to their pre-task content."""
+        from codemind.agent.rollback import apply_rollback
+
+        return apply_rollback(self, task_id, force=force)
+
+    def rollback_plan(self, task_id: str) -> dict[str, Any]:
+        from codemind.agent.rollback import plan_rollback
+
+        return plan_rollback(self, task_id)
+
     def _governor_loop(self) -> None:
         while not getattr(self, "_stopped", False):
             interval = max(2.0, self.config.resources.sample_interval)
@@ -224,6 +254,15 @@ class CodeMindApp:
 
     def _apply_config(self, changed: Sequence[str]) -> None:
         self.sampler.interval = max(0.5, self.config.resources.sample_interval)
+        if any(key.startswith("app.") for key in changed):
+            # the appearance belongs to the settings, not to the window: consumers outside the GUI
+            # (rendering tools, tests) must see the same colours without an event loop running
+            try:
+                from codemind.ui import theme as ui_theme
+
+                ui_theme.apply_appearance(self.config)
+            except Exception:  # pragma: no cover - a headless install without a usable Qt
+                pass
         self.memory.min_quality = self.config.memory.min_quality
         self.memory.learn_from_failures = self.config.memory.learn_from_failures
         self.sandbox.update_config(self.config)
@@ -364,6 +403,7 @@ class CodeMindApp:
                 "active_adapter": self.training.active_version(),
                 "advisor_loaded": self.training.advisor is not None,
             },
+            "quality": self.quality_report(limit=60),
             "memory": memory_stats,
             "knowledge": self.knowledge.stats(),
             "storage": self.layout.summary(),

@@ -550,7 +550,9 @@ class TrainingView(View):
         sub = ""
         if run is not None and run.started_at:
             sub = time.strftime("started %H:%M:%S", time.localtime(run.started_at))
-        self.run_tiles[4].set_value(human_duration(progress.get("elapsed") or 0), sub=sub)
+        elapsed = progress.get("elapsed")
+        # an idle view must not claim "0 ms": that looks like a measurement, not like "nothing runs"
+        self.run_tiles[4].set_value(human_duration(elapsed) if elapsed else "—", sub=sub)
         fraction = float(progress.get("percent") or 0) / 100.0
         self.run_progress.set_value(fraction, text=f"{fraction * 100:.1f}% · step {progress.get('step', 0)}")
         history = (metrics.get("history") or [])[-400:]

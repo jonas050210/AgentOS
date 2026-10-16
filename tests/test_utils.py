@@ -231,6 +231,120 @@ class ConfigTests(TempDataCase):
         categories = summary.get("categories") or app.layout.category_paths()
         self.assertTrue(categories, "the storage layout must describe its categories")
 
+class JobLogPersistenceTests(TempDataCase):
+    """Background processes have to survive a restart — which means their output must be on disk."""
+
+    def test_job_output_is_written_to_the_log_file(self) -> None:
+        from codemind.utils.jobs import JobManager
+
+        manager = JobManager(self.make_app().db, self.data_root / "joblogs")
+        job = manager.start("log-probe", ["python3", "-c", "print('first line'); print('second line')"], cwd=self.data_root)
+        deadline = time.time() + 30
+        while job.running and time.time() < deadline:
+            time.sleep(0.05)
+
+        path = Path(job.log_path)
+        self.assertTrue(path.exists(), "every job needs a log file on disk, not only an in-memory tail")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("first line", text)
+        self.assertIn("second line", text)
+        self.assertEqual(job.exit_code, 0)
+        self.assertEqual(job.status, "stopped")
+        stats = manager.stats()
+        self.assertGreaterEqual(stats["total"], 1)
+        self.assertEqual(stats["running"], 0)
+
+    def test_stopping_a_job_ends_the_process_and_the_log_stays_readable(self) -> None:
+        from codemind.utils.jobs import JobManager
+
+        manager = JobManager(self.make_app().db, self.data_root / "joblogs")
+        job = manager.start("sleeper", ["python3", "-c", "import time; print('up', flush=True); time.sleep(60)"], cwd=self.data_root)
+        deadline = time.time() + 15
+        while job.runtime < 0.5 and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(job.running)
+        self.assertTrue(manager.stop(job.id), "a running job must be stoppable")
+        deadline = time.time() + 20
+        while job.running and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(job.running)
+        self.assertIn("up", manager.log_tail(job.id))
+        self.assertEqual(manager.stop_all(), 0, "nothing may be left running")
+
+
+class UsbRoutingTests(TempDataCase):
+    """An attached 128 GB drive takes the heavy categories, everything else stays internal."""
+
+    def test_attached_volume_receives_the_configured_categories(self) -> None:
+        from codemind.storage.layout import StorageLayout
+
+        volume = self.data_root.parent / "fake-usb"
+        (volume / "codemind").mkdir(parents=True, exist_ok=True)
+        (volume / ".codemind").write_text("codemind", encoding="utf-8")
+        layout = StorageLayout.create(
+            self.data_root / "layout",
+            usb_override=str(volume),
+            usb_categories=("datasets", "checkpoints", "models"),
+        )
+        self.assertEqual(layout.usb_active, volume)
+        self.assertTrue(layout.volumes[0].marked)
+        datasets = layout.resolve("datasets")
+        self.assertEqual(datasets, volume / "codemind" / "datasets")
+        self.assertTrue(datasets.exists(), "the directory on the drive must be created")
+        self.assertEqual(layout.resolve("logs"), self.data_root / "layout" / "logs", "logs stay on the internal disk")
+        self.assertEqual(layout.summary()["usb_active"], str(volume))
+
+    def test_unavailable_volume_falls_back_without_losing_state(self) -> None:
+        from codemind.storage.layout import StorageLayout
+
+        layout = StorageLayout.create(
+            self.data_root / "layout2",
+            usb_override=str(self.data_root / "not-mounted"),
+            usb_categories=("datasets", "checkpoints"),
+        )
+        self.assertIsNone(layout.usb_active)
+        self.assertEqual(layout.volumes, [])
+        datasets = layout.resolve("datasets")
+        self.assertEqual(datasets, self.data_root / "layout2" / "datasets")
+        self.assertTrue(datasets.exists(), "without the drive the data root has to carry everything")
+
+
+class SettingsRepairTests(TempDataCase):
+    """One broken value in a hand-edited settings file must not throw the rest away."""
+
+    def test_a_single_invalid_value_is_repaired_and_reported(self) -> None:
+        from codemind.config import Config, ConfigStore
+
+        path = self.data_root / "settings-repair.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "agent": {"max_steps": 100_000, "autonomy": "autonomous"},
+                    "app": {"accent": "not-a-colour", "theme_mode": "midnight"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = ConfigStore(path)
+        config = store.load()
+        self.assertEqual(config.agent.max_steps, Config().agent.max_steps)
+        self.assertEqual(config.agent.autonomy, "autonomous", "valid neighbours must survive")
+        self.assertEqual(config.app.theme_mode, "midnight")
+        self.assertEqual(config.app.accent, Config().app.accent)
+        self.assertGreaterEqual(len(store.load_errors), 2, f"the repairs must be reported: {store.load_errors}")
+        self.assertTrue(any("max_steps" in note for note in store.load_errors))
+        self.assertTrue(any("accent" in note for note in store.load_errors))
+
+    def test_unknown_keys_are_reported_as_configuration_errors(self) -> None:
+        from codemind.config import ConfigError, ConfigStore
+
+        store = ConfigStore(self.data_root / "settings-unknown.json")
+        store.load()
+        with self.assertRaises(ConfigError):
+            store.update({"agent.no_such_setting": 1})
+        with self.assertRaises(ConfigError):
+            store.config.get("agent.no_such_setting")
+
 
 if __name__ == "__main__":
     unittest.main()

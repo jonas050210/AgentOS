@@ -25,6 +25,8 @@ a native Qt window, not a browser tab.
 | **Sandbox** | Isolated workspaces per task, command timeouts, rlimits/cgroup accounting, process trees, blocked destructive patterns, configurable network access and an execution history. |
 | **GitHub** | Clone, branch, commit, diff, push, pull requests and CI checks through the `gh` CLI or a token, with credentials redacted from every log line and payload. |
 | **Storage** | Internal SSD for active work, an optional USB drive (auto-detected, never hardcoded) for projects, datasets, checkpoints and logs. Works normally when the drive is absent. |
+| **Evidence** | Every completed task carries its checks. The Overview shows what share of the reported work is actually proven, names the claims that are not, and each run can be exported as a **change passport** (plan, commands, diffs, checks, model — hash-chained) or **rolled back** to its pre-task file state. |
+| **Interface** | Native Qt window with glass surfaces, three surface presets, a configurable accent and a motion level (`full`/`reduced`/`off`), a `Ctrl+K` command palette over all 22 actions, tray notifications, remembered geometry and keyboard shortcuts. |
 
 ## Requirements
 
@@ -82,6 +84,24 @@ python3 main.py --train --name night-1 --method auto --install-seed --evaluate -
 python3 main.py --headless                       # agent without any interface
 ```
 
+Inside the window:
+
+![Command palette](assets/screenshot-palette.png)
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+K` | Command palette — every action in the application (views, agent, training, sandbox, diagnostics) |
+| `Ctrl+1` … `Ctrl+7` | Jump to a view |
+| `F5` / `Ctrl+R` | Refresh the current view |
+| `Ctrl+E` | Export the change passport of the selected task |
+| `Ctrl+Shift+Z` | Roll the selected task back to its pre-task files |
+| `F1` | Overview of all shortcuts |
+| `Ctrl+Q` | Quit |
+
+Look and behaviour live in the settings (`app.theme_mode`, `app.glass_intensity`, `app.accent`,
+`app.motion`, `app.start_view`, `app.restore_geometry`, `app.minimize_to_tray`, `app.show_splash`)
+and take effect immediately — the interface follows the configuration instead of hardcoding colours.
+
 `--task` exits `0` only when the task really finished (`completed`); a blocked or failed task exits
 non-zero and prints why. `--data-root <dir>` (or `CODEMIND_DATA_DIR`) moves all state — database,
 logs, datasets, models — for a portable installation or a USB drive.
@@ -89,9 +109,10 @@ logs, datasets, models — for a portable installation or a USB drive.
 ### The seven views
 
 1. **Overview** — machine and agent state, current work, resource history, learning progress,
-   autonomy proposals.
+   autonomy proposals, and the evidence rate: how much of the finished work is proven.
 2. **Coding Agent** — submit a task, watch the plan and each step, live tool activity, diffs,
-   test output, approvals, cancel/pause/resume.
+   test output, approvals, cancel/pause/resume — plus **Passport** (export the proof of a run) and
+   **Roll back** (restore the files a run changed).
 3. **Training** — datasets, methods and what is missing, start/cancel/pause runs, live loss and
    throughput, checkpoints, evaluation results, promotion and model comparison.
 4. **Sandbox** — workspaces, running processes, execution history, per-command limits and the
@@ -115,6 +136,34 @@ Secrets are scrubbed on the way out: command output, tool results, GitHub payloa
 record pass through the redactor before they are written. Child processes do not inherit your
 tokens.
 
+## Proof of work
+
+An agent that says "done" is worth little unless the claim can be checked, so CodeMind records the
+evidence and shows when it is missing:
+
+- **Verification checks** are part of every task: the changed files and the detected test command,
+  each with its outcome. A task is only reported `completed` when all of them passed.
+- **The evidence rate** on the Overview (and in the status bar) counts completed tasks that produced
+  passing evidence; completed tasks *without* evidence are listed as unproven claims under
+  *Attention*.
+- **Change passport** — `app.write_passport(task_id)` (button *Passport*, `Ctrl+E`) writes a
+  JSON + Markdown record of one run: goal, plan, steps with tools and origins, commands, diffs,
+  checks, backend/model, and a SHA-256 hash chain over all entries, so later edits to the file are
+  detectable. Handy as a pull-request attachment.
+- **Rollback** — every write stores the pre-image of the file (plus whether it existed at all).
+  `app.rollback_task(task_id)` restores exactly those files and reports what it restored, deleted or
+  skipped. It refuses to run while the task is still active.
+
+```bash
+python3 - <<'PY'
+from codemind.app import CodeMindApp
+app = CodeMindApp(start_background=False)
+task = app.tasks.list(limit=1)[0]
+print(app.write_passport(task.id)["files"]["md"])   # the proof, as Markdown
+app.shutdown()
+PY
+```
+
 ## Training, honestly
 
 - **QLoRA / LoRA** — real fine-tuning of a local coding model, used when an NVIDIA GPU with CUDA,
@@ -135,6 +184,15 @@ python3 -m unittest discover -s tests -t .          # everything that can run he
 ./.venv/bin/python -m unittest discover -s tests -t .   # includes the GUI and launcher tests
 ```
 
+On a headless machine the Qt tests need a display plugin; the sandbox uses the VNC platform:
+
+```bash
+LD_LIBRARY_PATH=/path/to/gl-stubs QT_QPA_PLATFORM=vnc \
+  ./.venv/bin/python -m unittest discover -s tests -t .
+```
+
+Without a usable Qt the GUI tests skip themselves with a reason instead of failing.
+
 | Module | What it proves |
 | --- | --- |
 | `tests/test_structure.py` | no shadowed definitions, no hardcoded machine paths, no stubs, every module imports, no cloud inference endpoints |
@@ -142,9 +200,10 @@ python3 -m unittest discover -s tests -t .          # everything that can run he
 | `tests/test_agent.py` | tool inventory, permission classification, real repository analysis, a full run with verification evidence, the diagnose→repair→retry loop, cancellation, restart survival, no invented code |
 | `tests/test_training.py` | curated starter set without benchmark leakage, dataset import/export, training a real adapter, evaluation against the baseline, promotion, rejection, persistence across restarts |
 | `tests/test_utils.py` | text/file helpers, command timeouts and process control, credential redaction down to the log file, configuration validation |
-| `tests/test_ui.py` | the launcher CLI (`--version`, `--check`, `--doctor`, `--task`) and all seven views refreshing against a real application |
+| `tests/test_ui.py` | the launcher CLI (`--version`, `--check`, `--doctor`, `--task`), all seven views refreshing against a real application, the command palette, the appearance settings (surfaces, accent, motion, start view, geometry) and that the glass surfaces really paint |
+| `tests/test_evidence.py` | pre-images and rollback (restore, delete, refusals), the change passport (contents, hash chain, tamper detection, JSON/Markdown export), the honesty metric and the snapshot the interface polls |
 
-53 tests in total. The suite is deliberately lightweight: it needs no GPU, no model download and runs
+74 tests in total. The suite is deliberately lightweight: it needs no GPU, no model download and runs
 in about a minute on two cores. The GUI tests skip themselves when Qt cannot open a display. Current
 results on a 2-core development machine, including the bugs the suite found, are in
 [docs/CODEMIND_REPORT.md](docs/CODEMIND_REPORT.md).
@@ -159,12 +218,13 @@ codemind/
   autonomy/                 scheduled maintenance sessions and proposals
   llm/                      local backends (llama.cpp, Ollama) + deterministic planner
   memory/                   memories, knowledge index, retrieval
+  report/                   honesty metric and the hash-chained change passport
   sandbox/                  workspaces, limits, command policy, history
   training/                 datasets, methods, engine, evaluator, worker, seed set
   github/                   git and GitHub operations, credentials, redaction
   storage/                  database, storage layout, USB detection
   system/                   hardware probe, resources, governor
-  ui/                       theme, widgets, seven views, main window
+  ui/                       theme + appearance, animation layer, command palette, widgets, views, main window
 tests/                      the suite described above
 tools/                      headless screenshot harness, icon renderer
 assets/                     icon and screenshots
