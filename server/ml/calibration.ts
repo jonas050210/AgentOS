@@ -1,33 +1,34 @@
 import { TaskHead } from './softmax.js';
 
 /**
- * Delegation calibration.
+ * Delegation-threshold calibration.
  *
- * A softmax head that is 40% "confident" is not necessarily wrong 60% of the
- * time: raw softmax scores are uncalibrated. AgentOS therefore measures, on the
- * validation split the head never trained on, how accurate the *whole decision
- * chain* is for every candidate abstention threshold:
+ * A trained head is useful only up to the confidence where it is actually more
+ * trustworthy than the deterministic fallback. Below that confidence the rule
+ * planner is the better answer, and above it the head is. This module measures
+ * that crossover on data the head has never trained on and returns the
+ * threshold with the highest *end-to-end* accuracy, together with the curve it
+ * was picked from, so the choice is auditable instead of guessed.
  *
- *   confidence >= threshold  -> answer from the trained head
- *   otherwise, a rule applies -> answer from the built-in rule policy
- *   otherwise                 -> escalate (counted as unresolved)
+ * The chain being calibrated is the one the runtime uses:
  *
- * The threshold with the best measured end-to-end accuracy is stored with the
- * artefact, so a version carries the confidence at which it is actually
- * trustworthy instead of inheriting one global guess. This is deliberately a
- * small, honest calibration step — not temperature scaling on a held-out log
- * likelihood — and it is evaluated on data the head never saw.
+ *   head (confidence ≥ t)  →  rule planner (if it matches)  →  escalate
+ *
+ * Only the first step moves with `t`; the other two are what the platform would
+ * really do, policy confidence included.
  */
 
 export interface CalibrationExample {
   text: string;
+  /** Correct label for this input. */
   expected: string;
-  /** Label the rule policy would answer with, or null when no rule applies. */
+  /** What the rule planner answers, or `null` when it has no plan. */
   policyLabel: string | null;
 }
 
 export interface ThresholdPoint {
   threshold: number;
+  /** End-to-end accuracy if the head answered everything at or above `threshold`. */
   accuracy: number;
   correct: number;
   headAnswered: number;
@@ -36,72 +37,111 @@ export interface ThresholdPoint {
 }
 
 export interface DelegationCalibration {
-  /** Chosen abstention threshold (head answers at or above it). */
+  /** Threshold with the highest accuracy on the evaluation set. */
   threshold: number;
   accuracy: number;
   headAnswered: number;
   policyAnswered: number;
   escalated: number;
   examples: number;
+  /** Accuracy when every request is delegated to the rule planner. */
+  policyOnlyAccuracy: number;
+  /** Accuracy when the head always answers, regardless of confidence. */
+  headOnlyAccuracy: number;
+  /** Accuracy at the settings default, for comparison in the UI. */
+  defaultThreshold: number;
+  defaultThresholdAccuracy: number;
   curve: ThresholdPoint[];
 }
 
-const DEFAULT_THRESHOLDS = Array.from({ length: 20 }, (_, i) => Number((i * 0.05).toFixed(2)));
+export const DEFAULT_THRESHOLDS: number[] = Array.from({ length: 18 }, (_, index) => Number((0.1 + index * 0.05).toFixed(2)));
+
+interface ScoredExample {
+  expected: string;
+  headLabel: string;
+  confidence: number;
+  policyLabel: string | null;
+}
+
+interface EvaluationOutcome {
+  accuracy: number;
+  correct: number;
+  headAnswered: number;
+  policyAnswered: number;
+  escalated: number;
+}
+
+function runChain(scored: ScoredExample[], threshold: number): EvaluationOutcome {
+  let correct = 0;
+  let headAnswered = 0;
+  let policyAnswered = 0;
+  let escalated = 0;
+  for (const item of scored) {
+    if (item.confidence >= threshold) {
+      headAnswered++;
+      if (item.headLabel === item.expected) correct++;
+      continue;
+    }
+    if (item.policyLabel) {
+      policyAnswered++;
+      if (item.policyLabel === item.expected) correct++;
+      continue;
+    }
+    escalated++;
+  }
+  return {
+    accuracy: scored.length === 0 ? 0 : Number((correct / scored.length).toFixed(4)),
+    correct,
+    headAnswered,
+    policyAnswered,
+    escalated,
+  };
+}
 
 export function calibrateDelegationThreshold(
   head: TaskHead,
   examples: CalibrationExample[],
-  options: { thresholds?: number[] } = {},
+  options: { thresholds?: number[]; defaultThreshold?: number } = {},
 ): DelegationCalibration | null {
   if (examples.length === 0) return null;
-  const thresholds = options.thresholds ?? DEFAULT_THRESHOLDS;
 
-  // Score every example once; the sweep below only re-applies the threshold.
-  const scored = examples.map((example) => {
+  const scored: ScoredExample[] = examples.map((example) => {
     const prediction = head.predict(example.text);
     return {
       expected: example.expected,
-      label: prediction.label,
+      headLabel: prediction.label,
       confidence: prediction.confidence,
       policyLabel: example.policyLabel,
     };
   });
 
-  const curve: ThresholdPoint[] = thresholds.map((threshold) => {
-    let correct = 0;
-    let headAnswered = 0;
-    let policyAnswered = 0;
-    let escalated = 0;
-    for (const item of scored) {
-      if (item.confidence >= threshold) {
-        headAnswered++;
-        if (item.label === item.expected) correct++;
-      } else if (item.policyLabel) {
-        policyAnswered++;
-        if (item.policyLabel === item.expected) correct++;
-      } else {
-        escalated++;
-      }
-    }
-    return {
-      threshold,
-      accuracy: correct / scored.length,
-      correct,
-      headAnswered,
-      policyAnswered,
-      escalated,
-    };
-  });
+  const thresholds = options.thresholds ?? DEFAULT_THRESHOLDS;
+  const curve: ThresholdPoint[] = thresholds.map((threshold) => ({ threshold, ...runChain(scored, threshold) }));
 
-  const best = curve.reduce((acc, point) => {
-    if (point.correct > acc.correct) return point;
-    if (point.correct < acc.correct) return acc;
-    // Tie on accuracy: prefer fewer unresolved escalations, then the safer
-    // (higher) threshold.
-    if (point.escalated < acc.escalated) return point;
-    if (point.escalated > acc.escalated) return acc;
-    return point.threshold > acc.threshold ? point : acc;
-  });
+  let best = curve[0];
+  for (const point of curve) {
+    // Highest accuracy wins; on a tie the setting that escalates less is
+    // preferred, and failing that the more conservative (higher) threshold.
+    if (
+      point.accuracy > best.accuracy ||
+      (point.accuracy === best.accuracy && point.escalated < best.escalated) ||
+      (point.accuracy === best.accuracy && point.escalated === best.escalated && point.threshold > best.threshold)
+    ) {
+      best = point;
+    }
+  }
+
+  const defaultThreshold = options.defaultThreshold ?? 0.45;
+  const atDefault = curve.reduce((closest, point) =>
+    Math.abs(point.threshold - defaultThreshold) < Math.abs(closest.threshold - defaultThreshold) ? point : closest,
+  );
+
+  const headOnlyAccuracy = Number(
+    (scored.filter((item) => item.headLabel === item.expected).length / scored.length).toFixed(4),
+  );
+  const policyOnlyAccuracy = Number(
+    (scored.filter((item) => item.policyLabel === item.expected).length / scored.length).toFixed(4),
+  );
 
   return {
     threshold: best.threshold,
@@ -110,6 +150,10 @@ export function calibrateDelegationThreshold(
     policyAnswered: best.policyAnswered,
     escalated: best.escalated,
     examples: scored.length,
+    policyOnlyAccuracy,
+    headOnlyAccuracy,
+    defaultThreshold: atDefault.threshold,
+    defaultThresholdAccuracy: atDefault.accuracy,
     curve,
   };
 }

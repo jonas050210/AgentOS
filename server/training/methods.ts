@@ -1,5 +1,5 @@
 import { HyperparameterSpec, SpecialistCategory, TrainingMethodId, TrainingMethodInfo } from '../../shared/types.js';
-import { EpochReport, evaluateTaskHead, LabeledExample, TaskHead, trainTaskHead, TaskHeadArtifact } from '../ml/softmax.js';
+import { autoFeatureDim, EpochReport, evaluateTaskHead, LabeledExample, TaskHead, trainTaskHead, TaskHeadArtifact } from '../ml/softmax.js';
 import { Bm25Artifact, Bm25Index, evaluateRetrieval } from '../ml/retrieval.js';
 import { induceLexicon, LexiconArtifact } from '../ml/lexicon.js';
 import { calibrateDelegationThreshold } from '../ml/calibration.js';
@@ -70,7 +70,8 @@ const TASK_HEAD_HYPERPARAMETERS: HyperparameterSpec[] = [
   { key: 'l2', label: 'L2 regularisation', type: 'float', default: 0.0003, min: 0, max: 0.1, step: 0.0001, description: 'Weight decay that keeps the head from memorising the training split.', advanced: true },
   { key: 'batchSize', label: 'Batch size', type: 'int', default: 16, min: 1, max: 128, description: 'Examples per gradient update.', advanced: true },
   { key: 'momentum', label: 'Momentum', type: 'float', default: 0.9, min: 0, max: 0.99, step: 0.01, description: 'Smooths updates across batches.', advanced: true },
-  { key: 'featureDim', label: 'Feature dimensions', type: 'int', default: 512, min: 64, max: 4096, description: 'Size of the hashed feature space. Larger spaces separate rare phrases better.', advanced: true },
+  { key: 'featureDim', label: 'Hashed feature space', type: 'int', default: 0, min: 0, max: 4096, description: 'Number of hashed features the head trains on. 0 chooses a size from the training set (about eight slots per example).', advanced: true },
+  { key: 'patience', label: 'Early-stop patience', type: 'int', default: 25, min: 5, max: 200, description: 'Epochs without validation-loss improvement before training stops.', advanced: true },
   { key: 'valFraction', label: 'Validation split', type: 'float', default: 0.25, min: 0.1, max: 0.5, step: 0.05, description: 'Share of examples held back for early stopping.', advanced: true },
   { key: 'labelSmoothing', label: 'Label smoothing', type: 'float', default: 0.02, min: 0, max: 0.2, step: 0.01, description: 'Softens targets so the head stays calibrated on ambiguous instructions.', advanced: true },
   { key: 'includeUserExamples', label: 'Include my playground examples', type: 'boolean', default: true, description: 'Merges decisions you confirmed in the playground into the training split.' },
@@ -109,21 +110,26 @@ const taskHeadMethod: TrainingMethodDefinition = {
     ];
     const classes = [...new Set(examples.map((e) => e.label))].sort();
     if (classes.length < 2) throw new Error('Routing training needs at least two distinct decision labels.');
+    // 0 means "size it from the data"; an explicit value always wins.
+    const requestedFeatureDim = Math.round(num(ctx, 'featureDim', 0));
 
+    const featureDim = requestedFeatureDim > 0 ? requestedFeatureDim : autoFeatureDim(examples.length);
     ctx.log(`Training head on ${examples.length} examples across ${classes.length} labels`, {
       classes,
+      featureDim,
       userExamples: userExamples.length,
     });
 
     const result = trainTaskHead({
       examples,
       hyperparameters: {
-        epochs: num(ctx, 'epochs', 60),
-        learningRate: num(ctx, 'learningRate', 0.8),
+        epochs: num(ctx, 'epochs', 120),
+        learningRate: num(ctx, 'learningRate', 0.35),
         l2: num(ctx, 'l2', 3e-4),
         batchSize: num(ctx, 'batchSize', 16),
         momentum: num(ctx, 'momentum', 0.9),
-        featureDim: num(ctx, 'featureDim', 512),
+        featureDim,
+        patience: num(ctx, 'patience', 25),
         seed: num(ctx, 'seed', 42),
         valFraction: num(ctx, 'valFraction', 0.25),
         labelSmoothing: num(ctx, 'labelSmoothing', 0.02),

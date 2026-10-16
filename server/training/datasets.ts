@@ -119,6 +119,12 @@ export function memoryCorpus(): SeedDoc[] {
  * that is disjoint from both training and the benchmark split. Held-out data is
  * never traded for calibration: the benchmark split stays untouched.
  */
+/**
+ * Carves a calibration slice out of the training side. It is split the same way
+ * as everything else (seeded shuffle, then every n-th item) so every label is
+ * represented on both sides — without which a delegated threshold would be
+ * calibrated on a subset of the classes it has to judge.
+ */
 function withValidation<T>(train: T[]): { train: T[]; validation: T[] } {
   const inner = splitPool(train, 5);
   return { train: inner.train, validation: inner.evaluation };

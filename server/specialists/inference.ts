@@ -298,11 +298,13 @@ export function toolInputFor(toolId: string, input: string): Record<string, unkn
   }
 }
 
-function summarizeToolOutput(toolId: string, output: unknown): string {
+function summarizeToolOutput(toolId: string, output: unknown, input: Record<string, unknown> = {}): string {
   if (toolId === 'calc.evaluate') {
     const result = (output as { result?: number }).result;
-    const expression = (output as { expression?: string }).expression;
-    return `Result: ${expression ?? '?'} = ${result}`;
+    // The tool returns the value; the expression it evaluated comes from the
+    // call input, which is what the user actually asked about.
+    const expression = (output as { expression?: string }).expression ?? (input.expression as string | undefined);
+    return expression ? `Result: ${expression} = ${result}` : `Result: ${result}`;
   }
   if (toolId === 'workspace.read') {
     const content = String((output as { content?: string }).content ?? '');
@@ -485,7 +487,7 @@ export async function runSpecialist(
       const call = await toolRegistry.execute(decision.label, toolInput);
       toolCalls.push({ toolId: decision.label, success: call.success, durationMs: call.durationMs, summary: call.error ?? 'ok' });
       if (call.success) {
-        answer = summarizeToolOutput(decision.label, call.output);
+        answer = summarizeToolOutput(decision.label, call.output, toolInput);
         trace.push({ step: `tool:${decision.label}`, detail: `Executed ${decision.label}`, status: 'ok', durationMs: call.durationMs });
       } else {
         // A tool the model chose but cannot run is a real failure: escalate
