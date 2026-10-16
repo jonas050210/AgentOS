@@ -491,6 +491,17 @@ export interface SpecialistTestResult {
   trace: AgentTraceStep[];
 }
 
+/** Result of running the Voice specialist's normalisation pipeline. */
+export interface SpeechNormalizationResult {
+  text: string;
+  engine: string;
+  versionId: string | null;
+  /** Learned pronunciation entries the active version carries. */
+  lexiconEntries: number;
+  /** Which learned expansions were actually applied to this text. */
+  applied: Array<{ from: string; to: string }>;
+}
+
 export interface TrainingDefaultsResponse {
   methods: TrainingMethodInfo[];
   datasets: DatasetInfo[];

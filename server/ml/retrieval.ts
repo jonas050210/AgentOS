@@ -1,239 +1,222 @@
 import { round } from './rng.js';
-import { tokenizeWords } from './features.js';
+
+/**
+ * BM25 retrieval index.
+ *
+ * The Knowledge and Research specialists answer from documents instead of
+ * generating prose: a ranked list of passages the user can verify. BM25 is a
+ * real scoring function — term frequency saturation (k1), length normalisation
+ * (b), inverse document frequency — and the index is a plain JSON artefact that
+ * can be inspected, versioned and compared like any other model.
+ */
 
 export interface RetrievalDoc {
   id: string;
   title: string;
   text: string;
-  meta?: Record<string, unknown>;
-}
-
-export interface Bm25Hyperparameters {
-  k1: number;
-  b: number;
-  minDf: number;
-  charNgrams: boolean;
-  titleBoost: number;
-}
-
-export const DEFAULT_BM25_HP: Bm25Hyperparameters = {
-  k1: 1.2,
-  b: 0.75,
-  minDf: 1,
-  charNgrams: true,
-  titleBoost: 2,
-};
-
-export interface Bm25Artifact {
-  kind: 'retrieval_index';
-  formatVersion: 1;
-  hyperparameters: Bm25Hyperparameters;
-  docCount: number;
-  vocabularySize: number;
-  averageLength: number;
-  builtAt: string;
-  /** Serialised postings: term → [[docIndex, termFrequency], …] */
-  postings: Record<string, Array<[number, number]>>;
-  docIds: string[];
-  docTitles: string[];
-  docLengths: number[];
-  docNorms: number[];
-  totalTokens: number;
-}
-
-/**
- * BM25 retrieval index over word unigrams/bi-grams with optional character
- * n-grams (helps with typos and inflection). Built in-process, serialised to
- * JSON and loaded back — this is what a Knowledge or Research specialist is
- * trained into when the `retrieval_index` method runs.
- */
-export class Bm25Index {
-  private postings = new Map<string, Array<[number, number]>>();
-  private docIds: string[] = [];
-  private docTitles: string[] = [];
-  private docLengths: number[] = [];
-  private docNorms: number[] = [];
-  private totalTokens = 0;
-  private averageLength = 0;
-  private artifacts: Bm25Hyperparameters = DEFAULT_BM25_HP;
-  private vocabularySize = 0;
-
-  static build(docs: RetrievalDoc[], hyperparameters: Partial<Bm25Hyperparameters> = {}): Bm25Index {
-    const index = new Bm25Index();
-    index.build(docs, hyperparameters);
-    return index;
-  }
-
-  static fromArtifact(artifact: Bm25Artifact): Bm25Index {
-    const index = new Bm25Index();
-    index.artifacts = artifact.hyperparameters;
-    index.docIds = artifact.docIds.slice();
-    index.docTitles = artifact.docTitles.slice();
-    index.docLengths = artifact.docLengths.slice();
-    index.docNorms = artifact.docNorms.slice();
-    index.totalTokens = artifact.totalTokens;
-    index.averageLength = artifact.averageLength;
-    index.vocabularySize = artifact.vocabularySize;
-    index.postings = new Map(Object.entries(artifact.postings).map(([term, entries]) => [term, entries.map((e) => [e[0], e[1]] as [number, number])]));
-    return index;
-  }
-
-  build(docs: RetrievalDoc[], hyperparameters: Partial<Bm25Hyperparameters> = {}): void {
-    this.artifacts = { ...DEFAULT_BM25_HP, ...hyperparameters };
-    this.postings = new Map();
-    this.docIds = docs.map((d) => d.id);
-    this.docTitles = docs.map((d) => d.title);
-    this.docLengths = [];
-    this.docNorms = [];
-    this.totalTokens = 0;
-
-    const documentFrequency = new Map<string, number>();
-
-    docs.forEach((doc, docIndex) => {
-      const tokens = this.terms(`${doc.title} ${doc.title} ${doc.text}`, doc.title);
-      const counts = new Map<string, number>();
-      for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
-      this.docLengths.push(tokens.length);
-      this.totalTokens += tokens.length;
-      for (const [term, tf] of counts) {
-        const list = this.postings.get(term);
-        if (list) list.push([docIndex, tf]);
-        else this.postings.set(term, [[docIndex, tf]]);
-        documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
-      }
-    });
-
-    this.averageLength = docs.length === 0 ? 0 : this.totalTokens / docs.length;
-
-    // Prune rare terms and compute IDF weights per document for fast scoring.
-    if (this.artifacts.minDf > 1) {
-      for (const [term, df] of documentFrequency) {
-        if (df < this.artifacts.minDf) this.postings.delete(term);
-      }
-    }
-
-    this.vocabularySize = this.postings.size;
-    this.docNorms = docs.map(() => 0);
-    for (const list of this.postings.values()) {
-      const idf = this.idf(list.length);
-      for (const [docIndex, tf] of list) {
-        this.docNorms[docIndex] += idf * idf * tf;
-      }
-    }
-    for (let i = 0; i < this.docNorms.length; i++) this.docNorms[i] = Math.sqrt(this.docNorms[i]);
-  }
-
-  private terms(text: string, title: string): string[] {
-    const words = tokenizeWords(text);
-    const terms = [...words];
-    for (let i = 0; i + 1 < words.length; i++) terms.push(`${words[i]}_${words[i + 1]}`);
-    if (this.artifacts.charNgrams) {
-      const compact = words.join(' ');
-      for (let i = 0; i + 4 <= compact.length; i++) terms.push(`#${compact.slice(i, i + 4)}`);
-    }
-    const titleTerms = tokenizeWords(title);
-    for (let i = 0; i < Math.min(titleTerms.length, 8); i++) {
-      // Title tokens are weighted by repetition (cheap title boost for BM25).
-      for (let r = 1; r < Math.max(1, Math.round(this.artifacts.titleBoost)); r++) terms.push(titleTerms[i]);
-    }
-    return terms;
-  }
-
-  private idf(documentFrequency: number): number {
-    const n = Math.max(1, this.docIds.length);
-    return Math.log(1 + (n - documentFrequency + 0.5) / (documentFrequency + 0.5));
-  }
-
-  query(text: string, limit = 5): Array<{ id: string; title: string; score: number; index: number }> {
-    if (this.docIds.length === 0) return [];
-    const { k1, b } = this.artifacts;
-    const queryTerms = [...new Set(tokenizeWords(text).concat(...(this.artifacts.charNgrams ? charNgrams(tokenizeWords(text).join(' '), 4) : [])))];
-    const scores = new Float64Array(this.docIds.length);
-    for (const term of queryTerms) {
-      const list = this.postings.get(term);
-      if (!list) continue;
-      const idf = this.idf(list.length);
-      for (const [docIndex, tf] of list) {
-        const docLength = this.docLengths[docIndex] || 1;
-        const denominator = tf + k1 * (1 - b + (b * docLength) / (this.averageLength || 1));
-        scores[docIndex] += idf * ((tf * (k1 + 1)) / (denominator || 1));
-      }
-    }
-    return Array.from(scores)
-      .map((score, index) => ({ id: this.docIds[index], title: this.docTitles[index], score: round(score, 5), index }))
-      .filter((r) => r.score > 0)
-      .sort((a, b2) => b2.score - a.score)
-      .slice(0, limit);
-  }
-
-  get size(): number {
-    return this.docIds.length;
-  }
-
-  toArtifact(): Bm25Artifact {
-    return {
-      kind: 'retrieval_index',
-      formatVersion: 1,
-      hyperparameters: this.artifacts,
-      docCount: this.docIds.length,
-      vocabularySize: this.vocabularySize,
-      averageLength: round(this.averageLength, 4),
-      builtAt: new Date().toISOString(),
-      postings: Object.fromEntries(this.postings),
-      docIds: this.docIds,
-      docTitles: this.docTitles,
-      docLengths: this.docLengths,
-      docNorms: this.docNorms.map((n) => round(n, 6)),
-      totalTokens: this.totalTokens,
-    };
-  }
-}
-
-function charNgrams(text: string, n: number): string[] {
-  const out: string[] = [];
-  for (let i = 0; i + n <= text.length; i++) out.push(`#${text.slice(i, i + n)}`);
-  return out;
+  tags?: string[];
 }
 
 export interface RetrievalQuery {
   query: string;
-  /** Documents that should be retrieved, best first. */
-  relevantIds: string[];
+  relevant: string[];
+}
+
+export interface Bm25Options {
+  k1: number;
+  b: number;
+  /** Ignore terms that appear in fewer documents than this. */
+  minDf: number;
+  /** Title terms count this many times, because a title states the topic. */
+  titleBoost: number;
+  /** Add character 4-grams so paraphrases and compounds still match. */
+  charNgrams: boolean;
+}
+
+export const DEFAULT_BM25_OPTIONS: Bm25Options = { k1: 1.2, b: 0.75, minDf: 1, titleBoost: 2, charNgrams: true };
+
+export interface Bm25Artifact {
+  kind: 'retrieval_index';
+  formatVersion: 1;
+  options: Bm25Options;
+  documents: RetrievalDoc[];
+  /** Per-document token counts, needed for length normalisation at query time. */
+  lengths: Record<string, number>;
+  documentFrequency: Record<string, number>;
+  averageLength: number;
+  vocabularySize: number;
+  documentCount: number;
+  builtAt: string;
 }
 
 export interface RetrievalMetrics {
-  /** Fraction of relevant documents found within the top k, averaged. */
   recallAtK: number;
   precisionAtK: number;
+  /** Mean reciprocal rank of the first relevant hit. */
   mrr: number;
+  meanReciprocalRank: number;
   hitRate: number;
   queries: number;
+  k: number;
 }
 
-/** Standard retrieval metrics — the objective function for index training. */
-export function evaluateRetrieval(index: Bm25Index, queries: RetrievalQuery[], k = 5): RetrievalMetrics {
-  if (queries.length === 0) return { recallAtK: 0, precisionAtK: 0, mrr: 0, hitRate: 0, queries: 0 };
-  let recall = 0;
-  let precision = 0;
-  let reciprocalRank = 0;
-  let hits = 0;
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'is', 'are', 'was', 'were', 'be', 'been', 'for', 'on', 'with',
+  'that', 'this', 'it', 'as', 'by', 'at', 'from', 'we', 'you', 'do', 'does', 'did', 'how', 'what', 'which', 'when',
+  'where', 'can', 'could', 'should', 'would', 'my', 'our', 'your', 'their', 'its', 'into', 'than', 'then', 'there',
+]);
 
-  for (const item of queries) {
-    const results = index.query(item.query, k).map((r) => r.id);
-    const relevant = new Set(item.relevantIds);
-    const found = results.filter((id) => relevant.has(id));
-    recall += relevant.size === 0 ? 0 : found.length / relevant.size;
-    precision += results.length === 0 ? 0 : found.length / results.length;
-    if (found.length > 0) hits++;
-    const rank = results.findIndex((id) => relevant.has(id));
-    reciprocalRank += rank === -1 ? 0 : 1 / (rank + 1);
+/** Tokenisation for indexing: lower-case, stopwords removed, compounds kept. */
+export function tokenizeForIndex(text: string, options: { title?: boolean } = {}): string[] {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .split(/\s+/)
+    .map((token) => token.replace(/^-+|-+$/g, ''))
+    .filter((token) => token.length > 1 && !STOPWORDS.has(token));
+  if (options.title) return tokens;
+  return tokens;
+}
+
+function charNgrams(token: string): string[] {
+  if (token.length < 5) return [];
+  const grams: string[] = [];
+  for (let i = 0; i + 4 <= token.length; i++) grams.push(`#${token.slice(i, i + 4)}`);
+  return grams;
+}
+
+export class Bm25Index {
+  readonly documents: RetrievalDoc[];
+  readonly options: Bm25Options;
+  private readonly postings = new Map<string, Map<number, number>>();
+  private readonly lengths: number[] = [];
+  private readonly averageLength: number;
+
+  constructor(documents: RetrievalDoc[], options: Partial<Bm25Options> = {}) {
+    this.documents = documents;
+    this.options = { ...DEFAULT_BM25_OPTIONS, ...options };
+    documents.forEach((doc, index) => {
+      const titleTokens = tokenizeForIndex(doc.title, { title: true });
+      const bodyTokens = tokenizeForIndex(`${doc.title} ${doc.text} ${(doc.tags ?? []).join(' ')}`);
+      const tokens = [...bodyTokens, ...titleTokens.slice(0, Math.max(0, this.options.titleBoost - 1))];
+      if (this.options.charNgrams) tokens.push(...bodyTokens.flatMap(charNgrams));
+      this.lengths.push(tokens.length);
+      for (const token of tokens) {
+        const posting = this.postings.get(token) ?? new Map<number, number>();
+        posting.set(index, (posting.get(index) ?? 0) + 1);
+        this.postings.set(token, posting);
+      }
+    });
+    const total = this.lengths.reduce((sum, length) => sum + length, 0);
+    this.averageLength = this.lengths.length === 0 ? 0 : total / this.lengths.length;
   }
 
+  get size(): number {
+    return this.documents.length;
+  }
+
+  get vocabulary(): number {
+    return this.postings.size;
+  }
+
+  private idf(token: string): number {
+    const df = this.postings.get(token)?.size ?? 0;
+    if (df === 0) return 0;
+    return Math.log(1 + (this.documents.length - df + 0.5) / (df + 0.5));
+  }
+
+  /** BM25 scores for a query, highest first. */
+  query(text: string, topK = 5): Array<{ id: string; title: string; score: number; index: number }> {
+    const tokens = tokenizeForIndex(text);
+    if (tokens.length === 0 || this.documents.length === 0) return [];
+    const queryTokens = [...tokens, ...(this.options.charNgrams ? tokens.flatMap(charNgrams) : [])];
+    const scores = new Float64Array(this.documents.length);
+    for (const token of queryTokens) {
+      const posting = this.postings.get(token);
+      if (!posting || posting.size < Math.max(1, this.options.minDf)) continue;
+      const idf = this.idf(token);
+      if (idf <= 0) continue;
+      for (const [docIndex, termFrequency] of posting) {
+        const length = this.lengths[docIndex] || 1;
+        const denominator = termFrequency + this.options.k1 * (1 - this.options.b + (this.options.b * length) / (this.averageLength || 1));
+        scores[docIndex] += idf * ((termFrequency * (this.options.k1 + 1)) / (denominator || 1));
+      }
+    }
+    return Array.from(scores)
+      .map((score, index) => ({ score, index }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, topK)
+      .map((entry) => ({
+        id: this.documents[entry.index].id,
+        title: this.documents[entry.index].title,
+        score: round(entry.score, 4),
+        index: entry.index,
+      }));
+  }
+
+  toArtifact(): Bm25Artifact {
+    const lengths: Record<string, number> = {};
+    this.documents.forEach((doc, index) => {
+      lengths[doc.id] = this.lengths[index];
+    });
+    const documentFrequency: Record<string, number> = {};
+    for (const [token, posting] of this.postings) documentFrequency[token] = posting.size;
+    return {
+      kind: 'retrieval_index',
+      formatVersion: 1,
+      options: this.options,
+      documents: this.documents,
+      lengths,
+      documentFrequency,
+      averageLength: round(this.averageLength, 4),
+      vocabularySize: this.vocabulary,
+      documentCount: this.documents.length,
+      builtAt: new Date().toISOString(),
+    };
+  }
+
+  /** Builds an index from a set of documents (the training entry point). */
+  static build(documents: RetrievalDoc[], options: Partial<Bm25Options> = {}): Bm25Index {
+    return new Bm25Index(documents, options);
+  }
+
+  static fromArtifact(artifact: Bm25Artifact): Bm25Index {
+    if (!artifact || artifact.kind !== 'retrieval_index' || !Array.isArray(artifact.documents)) {
+      throw new Error('Not a retrieval index artefact.');
+    }
+    return new Bm25Index(artifact.documents, artifact.options);
+  }
+}
+
+/** Standard retrieval metrics over a labelled query set. */
+export function evaluateRetrieval(index: Bm25Index, queries: RetrievalQuery[], k = 5): RetrievalMetrics {
+  if (queries.length === 0) {
+    return { recallAtK: 0, precisionAtK: 0, mrr: 0, meanReciprocalRank: 0, hitRate: 0, queries: 0, k };
+  }
+  let recallSum = 0;
+  let precisionSum = 0;
+  let reciprocalRankSum = 0;
+  let hits = 0;
+  for (const item of queries) {
+    const ids = index.query(item.query, k).map((hit) => hit.id);
+    const relevantFound = item.relevant.filter((id) => ids.includes(id)).length;
+    recallSum += item.relevant.length === 0 ? 0 : relevantFound / item.relevant.length;
+    precisionSum += ids.length === 0 ? 0 : relevantFound / ids.length;
+    const firstRelevant = ids.findIndex((id) => item.relevant.includes(id));
+    if (firstRelevant >= 0) {
+      reciprocalRankSum += 1 / (firstRelevant + 1);
+      hits++;
+    }
+  }
+  const mrr = round(reciprocalRankSum / queries.length, 4);
   return {
-    recallAtK: round(recall / queries.length, 4),
-    precisionAtK: round(precision / queries.length, 4),
-    mrr: round(reciprocalRank / queries.length, 4),
+    recallAtK: round(recallSum / queries.length, 4),
+    precisionAtK: round(precisionSum / queries.length, 4),
+    mrr,
+    meanReciprocalRank: mrr,
     hitRate: round(hits / queries.length, 4),
     queries: queries.length,
+    k,
   };
 }

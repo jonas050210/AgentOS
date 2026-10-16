@@ -1,4 +1,3 @@
-import { HashingVectorizer } from './features.js';
 import { TaskHead } from './softmax.js';
 
 /**
@@ -52,15 +51,14 @@ const DEFAULT_THRESHOLDS = Array.from({ length: 20 }, (_, i) => Number((i * 0.05
 export function calibrateDelegationThreshold(
   head: TaskHead,
   examples: CalibrationExample[],
-  options: { thresholds?: number[]; vectorizer?: HashingVectorizer } = {},
+  options: { thresholds?: number[] } = {},
 ): DelegationCalibration | null {
   if (examples.length === 0) return null;
-  const vectorizer = options.vectorizer ?? new HashingVectorizer({ featureDim: head.featureDim });
   const thresholds = options.thresholds ?? DEFAULT_THRESHOLDS;
 
   // Score every example once; the sweep below only re-applies the threshold.
   const scored = examples.map((example) => {
-    const prediction = head.predict(example.text, vectorizer);
+    const prediction = head.predict(example.text);
     return {
       expected: example.expected,
       label: prediction.label,

@@ -1,97 +1,95 @@
-import { fnv1a } from './rng.js';
+/**
+ * Feature extraction for the local task heads.
+ *
+ * Instruction → hashed n-gram features (unigrams, bigrams and character
+ * 4-grams), L2-normalised. Hashing keeps the model compact and means no
+ * vocabulary has to be stored or aligned between training runs — the same
+ * mapping is recomputed deterministically at inference time.
+ */
+
+export interface VectorizerConfig {
+  featureDim: number;
+  useBigrams: boolean;
+  useCharGrams: boolean;
+}
+
+export const DEFAULT_VECTORIZER: VectorizerConfig = { featureDim: 512, useBigrams: true, useCharGrams: true };
 
 export interface SparseVector {
   indices: Int32Array;
   values: Float64Array;
+  dim: number;
 }
 
-export interface VectorizerConfig {
-  featureDim: number;
-  wordUnigrams: boolean;
-  wordBigrams: boolean;
-  charNgrams: number;
+/** FNV-1a — small, fast and stable across processes. */
+export function hashString(input: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
 }
 
-export const DEFAULT_VECTORIZER: VectorizerConfig = {
-  featureDim: 512,
-  wordUnigrams: true,
-  wordBigrams: true,
-  charNgrams: 4,
-};
-
-const WORD_RE = /[a-z0-9]+/g;
-
-export function tokenizeWords(text: string): string[] {
-  return text.toLowerCase().match(WORD_RE) ?? [];
+export function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s'%$^*/+\-=().?]/gu, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
 }
 
-/**
- * Feature hashing over word unigrams, word bigrams and character n-grams.
- *
- * Hashing keeps the feature space fixed and memory-bounded (no vocabulary that
- * grows with the corpus) and is fully deterministic, which matters because the
- * resulting vectorizer must be reproducible when a saved head is loaded.
- */
 export class HashingVectorizer {
   readonly config: VectorizerConfig;
 
   constructor(config: Partial<VectorizerConfig> = {}) {
-    const dim = config.featureDim ?? DEFAULT_VECTORIZER.featureDim;
+    const dim = Math.max(64, Math.min(4096, Math.round(config.featureDim ?? DEFAULT_VECTORIZER.featureDim)));
     this.config = {
-      featureDim: Math.max(64, Math.min(8192, Math.round(dim))),
-      wordUnigrams: config.wordUnigrams ?? DEFAULT_VECTORIZER.wordUnigrams,
-      wordBigrams: config.wordBigrams ?? DEFAULT_VECTORIZER.wordBigrams,
-      charNgrams: config.charNgrams ?? DEFAULT_VECTORIZER.charNgrams,
+      featureDim: dim,
+      useBigrams: config.useBigrams ?? DEFAULT_VECTORIZER.useBigrams,
+      useCharGrams: config.useCharGrams ?? DEFAULT_VECTORIZER.useCharGrams,
     };
   }
 
-  /** Extracts the raw feature tokens for a text (exported for tests/debugging). */
+  get featureDim(): number {
+    return this.config.featureDim;
+  }
+
+  /** Raw feature strings for a text — exported for tests and diagnostics. */
   features(text: string): string[] {
-    const words = tokenizeWords(text);
-    const features: string[] = [];
-    if (this.config.wordUnigrams) {
-      for (const w of words) features.push(`w:${w}`);
+    const tokens = tokenize(text);
+    const features: string[] = tokens.map((token) => `w:${token}`);
+    if (this.config.useBigrams) {
+      for (let i = 0; i + 1 < tokens.length; i++) features.push(`b:${tokens[i]}_${tokens[i + 1]}`);
     }
-    if (this.config.wordBigrams) {
-      for (let i = 0; i + 1 < words.length; i++) features.push(`b:${words[i]}_${words[i + 1]}`);
-    }
-    const n = this.config.charNgrams;
-    if (n > 1) {
-      const compact = words.join(' ');
-      for (let i = 0; i + n <= compact.length; i++) features.push(`c:${compact.slice(i, i + n)}`);
+    if (this.config.useCharGrams) {
+      const compact = tokens.join(' ');
+      for (let i = 0; i + 4 <= compact.length; i++) features.push(`c:${compact.slice(i, i + 4)}`);
     }
     return features;
   }
 
   vectorize(text: string): SparseVector {
-    const accum = new Map<number, number>();
-    for (const feature of this.features(text)) {
-      const h = fnv1a(feature);
-      const index = h % this.config.featureDim;
-      // Second, independent hash decides the sign: signed hashing keeps the
-      // expectation of hash collisions at zero.
-      const sign = fnv1a(feature, 0x9e3779b1) % 2 === 0 ? 1 : -1;
-      accum.set(index, (accum.get(index) ?? 0) + sign);
+    const dim = this.config.featureDim;
+    const features = this.features(text);
+    const accumulator = new Map<number, number>();
+    for (const feature of features) {
+      const index = hashString(feature) % dim;
+      accumulator.set(index, (accumulator.get(index) ?? 0) + 1);
     }
-
-    const indices = new Int32Array(accum.size);
-    const values = new Float64Array(accum.size);
-    let i = 0;
+    const indices = Int32Array.from(accumulator.keys());
+    const raw = Float64Array.from(accumulator.values());
     let norm = 0;
-    for (const [index, value] of accum) {
-      indices[i] = index;
-      values[i] = value;
-      norm += value * value;
-      i++;
-    }
-    const length = Math.sqrt(norm) || 1;
-    for (let k = 0; k < values.length; k++) values[k] = values[k] / length;
-    return { indices, values };
+    for (let i = 0; i < raw.length; i++) norm += raw[i] * raw[i];
+    norm = Math.sqrt(norm) || 1;
+    const values = new Float64Array(raw.length);
+    for (let i = 0; i < raw.length; i++) values[i] = raw[i] / norm;
+    return { indices, values, dim };
   }
 }
 
-export function toDense(vector: SparseVector, dim: number): Float64Array {
-  const dense = new Float64Array(dim);
-  for (let i = 0; i < vector.indices.length; i++) dense[vector.indices[i]] += vector.values[i];
+export function toDense(vector: SparseVector): Float64Array {
+  const dense = new Float64Array(vector.dim);
+  for (let i = 0; i < vector.indices.length; i++) dense[vector.indices[i]] = vector.values[i];
   return dense;
 }

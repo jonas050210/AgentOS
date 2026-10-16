@@ -77,7 +77,7 @@ describe('benchmark suites', () => {
 
   it('refuses to benchmark a specialist outside the suite category', async () => {
     await expect(runner.runBenchmark({ specialistId: 'coding-ai', suiteId: 'voice.normalization' })).rejects.toThrow(
-      /targets voice specialists/i,
+      /does not declare the "Voice/i,
     );
   });
 });
@@ -206,7 +206,7 @@ describe('benchmark runner', () => {
     const comparison = store.benchmarkStore.buildComparison(candidate, goodCard);
     expect(candidate.quality).toBeLessThan(goodCard.quality);
     expect(comparison.verdict).toBe('regressed');
-    expect(comparison.summary).toMatch(/regression/i);
+    expect(comparison.summary).toMatch(/worse than|regression/i);
     expect(comparison.rows.some((row) => row.metric === 'quality' && row.regression)).toBe(true);
   });
 
