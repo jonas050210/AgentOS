@@ -1,7 +1,8 @@
 import { ProviderInfo, ModelInfo } from '../../shared/types.js';
 
 export interface GenerateRequest {
-  model: string;
+  /** Model id to use; when omitted the provider falls back to its own default. */
+  model?: string;
   prompt: string;
   system?: string;
   temperature?: number;

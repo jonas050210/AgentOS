@@ -6,7 +6,6 @@ import {
   SpecialistSummary,
   StatusLevel,
 } from '../../shared/types.js';
-import { providerRegistry } from '../providers/registry.js';
 import { toolRegistry } from '../tools/registry.js';
 import { CAPABILITIES, getCapability, routeCapability } from '../capabilities/registry.js';
 import { conversationStore } from './conversations.js';
@@ -114,7 +113,6 @@ export async function handleChat(request: AgentChatRequest): Promise<AgentChatRe
   if (!message) throw new OrchestratorError('Message must not be empty');
   if (message.length > 8000) throw new OrchestratorError('Message exceeds 8000 characters');
 
-  const settings = settingsStore.get();
   const route = routeToSpecialist(request);
   trace.push({
     step: 'route',
@@ -146,26 +144,39 @@ export async function handleChat(request: AgentChatRequest): Promise<AgentChatRe
     }
   }
 
-  const result = await runSpecialist(route.specialist.id, message, { mode: 'chat' });
+  const result = await runSpecialist(route.specialist.id, message, { mode: 'chat', context: contextBlocks });
   for (const step of result.trace) trace.push(step);
 
-  const provider = await providerRegistry.preferred();
-  const providerInfo = provider.info();
+  // Reporting follows the run that actually happened. The specialist result names
+  // the provider (if any) that produced the answer, so the orchestrator does not
+  // probe availability a second time — a second probe costs latency and could
+  // describe a different provider than the one that answered.
   const usedOfflineFallback = result.answeredBy === 'offline-engine';
+  const providerLabel = result.providerName ?? result.providerId ?? 'The model provider';
   if (result.providerError) {
     // Honest reporting: the provider was unreachable, so nothing answered.
     trace.push({
       step: 'model',
-      detail: `${providerInfo.name} was unreachable: ${result.providerError}`,
+      detail: `${providerLabel} was unreachable: ${result.providerError}`,
       status: 'error',
+    });
+  } else if (usedOfflineFallback) {
+    trace.push({
+      step: 'model',
+      detail: 'No external provider available — the offline engine answered instead',
+      status: 'warn',
+    });
+  } else if (result.providerId) {
+    trace.push({
+      step: 'model',
+      detail: `${providerLabel} supplied the language answer${result.model ? ` (${result.model})` : ''}`,
+      status: 'ok',
     });
   } else if (result.escalated) {
     trace.push({
       step: 'model',
-      detail: usedOfflineFallback
-        ? 'No external provider available — the offline engine answered instead'
-        : `${providerInfo.name} supplied the language answer`,
-      status: usedOfflineFallback ? 'warn' : 'ok',
+      detail: `Escalation skipped — ${result.escalationReason ?? 'no provider was contacted'}`,
+      status: 'skipped',
     });
   } else {
     trace.push({
@@ -192,8 +203,13 @@ export async function handleChat(request: AgentChatRequest): Promise<AgentChatRe
       confidence: result.confidence,
       escalated: result.escalated,
       escalationReason: result.escalationReason,
-      providerId: result.escalated ? provider.id : 'local',
-      model: result.escalated ? (provider.id === 'openai' ? settings.providers.openai.model : settings.providers.ollama.model) : result.engine,
+      // `providerId` names the provider this turn involved — the one that answered,
+      // or (with `providerError`) the one that failed. `local` when none was called.
+      providerId: result.providerId ?? 'local',
+      providerName: result.providerName,
+      // The model that produced the answer; a failed provider produced nothing,
+      // so reporting an engine string as a "model" there would be a fiction.
+      model: result.model ?? (result.providerError ? null : result.engine),
       degraded: usedOfflineFallback,
       answeredBy: result.answeredBy,
       providerError: result.providerError,

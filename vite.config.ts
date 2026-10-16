@@ -28,7 +28,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./src/test/setup.ts'],
+    // jsdom matchers for the component tests, plus the node-side isolation of
+    // the server stores (a throwaway AGENTOS_DATA_DIR per run).
+    setupFiles: ['./src/test/setup.ts', './server/test-suite.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'server/**/*.test.ts'],
     exclude: ['node_modules', 'dist', 'dist-server'],
   },

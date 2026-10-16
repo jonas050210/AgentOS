@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { SystemProvider } from '@/state/SystemContext';
 import { SpecialistWorkspaceView } from './SpecialistWorkspaceView';
 import { mockApi } from '@/test/server';
+import { testResultFixture } from '@/test/fixtures';
 
 function renderWorkspace(specialistId = 'coding-ai') {
   return render(
@@ -56,6 +57,51 @@ describe('specialist workspace', () => {
     expect(await screen.findByRole('heading', { name: /Research AI/ })).toBeInTheDocument();
     expect(screen.getByText(/No trained model version yet/)).toBeInTheDocument();
     expect(screen.getAllByText('untrained').length).toBeGreaterThan(0);
+  });
+
+  it('names the provider that answered instead of implying the local path', async () => {
+    mockApi({
+      '/api/specialists/coding-ai/test': {
+        ...testResultFixture,
+        answer: 'Answered by the local model.',
+        answeredBy: 'provider',
+        providerId: 'ollama',
+        providerName: 'Ollama (local)',
+        model: 'llama3.2',
+      },
+    });
+    renderWorkspace();
+    await screen.findByRole('heading', { name: /Coding AI/ });
+    await userEvent.click(screen.getByRole('tab', { name: 'Test bench' }));
+
+    await userEvent.type(screen.getByLabelText('Test input'), 'hello there');
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+    expect(await screen.findByText('answered by Ollama (local) (llama3.2)')).toBeInTheDocument();
+  });
+
+  it('reports an unreachable provider instead of claiming a model answered', async () => {
+    mockApi({
+      '/api/specialists/coding-ai/test': {
+        ...testResultFixture,
+        answer: 'The specialist could not complete this request: socket hang up',
+        answeredBy: 'local',
+        providerId: 'ollama',
+        providerName: 'Ollama (local)',
+        model: null,
+        providerError: 'socket hang up',
+        escalated: true,
+      },
+    });
+    renderWorkspace();
+    await screen.findByRole('heading', { name: /Coding AI/ });
+    await userEvent.click(screen.getByRole('tab', { name: 'Test bench' }));
+
+    await userEvent.type(screen.getByLabelText('Test input'), 'hello there');
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+    expect(await screen.findByText('provider unreachable — socket hang up')).toBeInTheDocument();
+    expect(screen.getByText(/no model answered/)).toBeInTheDocument();
   });
 
   it('tells the user when a specialist id does not exist', async () => {

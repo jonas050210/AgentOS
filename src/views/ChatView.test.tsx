@@ -55,6 +55,44 @@ describe('ChatView', () => {
     expect(await screen.findByText(/Message exceeds 8000 characters/)).toBeInTheDocument();
   });
 
+  it('labels an unreachable provider instead of showing a model name', async () => {
+    mockApi(
+      {},
+      {
+        chatResponse: {
+          conversationId: 'conv_test',
+          message: {
+            id: 'msg_a',
+            role: 'assistant',
+            content: 'The specialist could not complete this request: socket hang up',
+            timestamp: new Date('2026-01-01T00:00:03.000Z').toISOString(),
+            meta: {
+              capabilityId: 'general.assistant',
+              providerId: 'ollama',
+              providerName: 'Ollama (local)',
+              model: null,
+              degraded: false,
+              answeredBy: 'local',
+              providerError: 'socket hang up',
+            },
+          },
+          trace: [
+            { step: 'route', detail: 'Auto-routed to Concierge AI', status: 'ok' },
+            { step: 'escalate', detail: 'Provider failure: socket hang up', status: 'error' },
+          ],
+        },
+      },
+    );
+    renderChat();
+    const input = await screen.findByLabelText('Message');
+    await userEvent.type(input, 'hello agentos');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('provider unreachable')).toBeInTheDocument();
+    // The reply is never credited to a model that produced nothing.
+    expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
+  });
+
   it('disables the send button for empty input', async () => {
     mockApi();
     renderChat();

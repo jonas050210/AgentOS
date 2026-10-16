@@ -35,11 +35,16 @@ npm start            # http://localhost:4317
 Verification commands:
 
 ```bash
-npm test             # 126 unit + integration tests (vitest, jsdom + node)
+npm test             # 143 unit + integration tests (vitest, jsdom + node)
 npm run typecheck    # strict TypeScript across client, server and shared types
 npm run build        # production build (also type-checks)
 npm run smoke        # boots the real backend and runs 50 end-to-end checks, incl. a real training run
 ```
+
+Server tests are hermetic: the suites that exercise escalation register their own provider stubs, so a
+result never depends on whether an Ollama instance happens to run on the machine executing the tests, and
+`server/test-suite.setup.ts` points `AGENTOS_DATA_DIR` at a throwaway directory so a test run never reads
+from or writes to the working tree's `data/` directory.
 
 ---
 
@@ -196,7 +201,11 @@ Requirement-by-requirement verification: [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.
    duration) and the full trace are stored in the conversation and returned to the UI.
 
 Every reply states which of the four mechanisms answered it: a trained local model, the rule policy,
-an external provider, or the offline engine.
+an external provider, or the offline engine. The metadata (`answeredBy`, `providerId`, `providerName`,
+`model`, `degraded`) is taken from the run that actually happened rather than inferred from settings, so
+a provider that answered is reported as `provider` (and never as the degraded offline engine), and a
+provider that failed is reported as unreachable with `providerError` set — the turn is not credited to a
+model that produced nothing.
 
 ### Extension points
 
@@ -299,6 +308,9 @@ the platform — the run pipeline, promotion gate and benchmark trail are method
    to untrusted networks.
 7. **One training run at a time per specialist.** Runs are sequential in-process; cancellation is
    supported and leaves no partial version behind.
+8. **Escalation has no per-request deadline of its own.** Each adapter bounds its own call (1.5 s for an
+   Ollama availability probe, 120 s for generation), and the provider is chosen once per turn, but a
+   provider that accepts the connection and then stalls holds the turn until its adapter times out.
 
 ## Roadmap
 

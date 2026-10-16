@@ -212,6 +212,63 @@ describe('AgentOS HTTP API', () => {
     expect(body.trace.find((t: { step: string }) => t.step === 'model').status).toBe('error');
     expect(body.message.meta.providerError).toBe('socket hang up');
     expect(body.message.meta.answeredBy).toBe('local');
+    // The failed provider is named, but it is never reported as the author and
+    // the turn is not marked as the degraded offline fallback.
+    expect(body.message.meta.providerId).toBe('ollama');
+    expect(body.message.meta.providerName).toBe('Broken');
+    expect(body.message.meta.model).toBeNull();
+    expect(body.message.meta.degraded).toBe(false);
+    providerRegistry.register(original);
+  });
+
+  it('reports the provider that actually answered a chat turn', async () => {
+    const original = providerRegistry.get('ollama')!;
+    providerRegistry.register({
+      id: 'ollama',
+      name: 'Answering stub',
+      type: 'local',
+      info: () => ({ id: 'ollama', name: 'Answering stub', type: 'local', available: true, configured: true, detail: 'stub' }),
+      isAvailable: async () => true,
+      listModels: async () => [],
+      generate: async (req) => ({ text: 'Answered by the stub.', model: req.model ?? 'stub', providerId: 'ollama' }),
+    });
+
+    const res = await send('/api/chat', { message: 'hi' });
+    expect(res.status).toBe(200);
+    const body = await readJson(res);
+    expect(body.message.content).toBe('Answered by the stub.');
+    expect(body.message.meta.answeredBy).toBe('provider');
+    expect(body.message.meta.degraded).toBe(false);
+    expect(body.message.meta.providerId).toBe('ollama');
+    expect(body.message.meta.providerName).toBe('Answering stub');
+    expect(body.message.meta.model).toBe('llama3.2');
+    const modelStep = body.trace.find((t: { step: string }) => t.step === 'model');
+    expect(modelStep.status).toBe('ok');
+    expect(modelStep.detail).toMatch(/Answering stub supplied the language answer/);
+    providerRegistry.register(original);
+  });
+
+  it('reports the offline engine, its own model and the degraded flag when no provider is available', async () => {
+    const original = providerRegistry.get('ollama')!;
+    providerRegistry.register({
+      id: 'ollama',
+      name: 'Ollama (unavailable stub)',
+      type: 'local',
+      info: () => ({ id: 'ollama', name: 'Ollama (unavailable stub)', type: 'local', available: false, configured: true, detail: 'stub' }),
+      isAvailable: async () => false,
+      listModels: async () => [],
+      generate: async () => {
+        throw new Error('must not be called');
+      },
+    });
+
+    const body = await readJson(await send('/api/chat', { message: 'hi' }));
+    expect(body.message.content).toMatch(/offline engine/i);
+    expect(body.message.meta.answeredBy).toBe('offline-engine');
+    expect(body.message.meta.degraded).toBe(true);
+    expect(body.message.meta.providerId).toBe('builtin');
+    expect(body.message.meta.model).toBe('offline-reasoner');
+    expect(body.trace.find((t: { step: string }) => t.step === 'model').status).toBe('warn');
     providerRegistry.register(original);
   });
 });
