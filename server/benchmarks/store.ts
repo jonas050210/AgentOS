@@ -16,8 +16,12 @@ import { logger } from '../logger.js';
  */
 
 const MAX_CARDS = 240;
-/** Keeps one card bounded so a long suite cannot bloat the store. */
-const MAX_TASK_RESULTS = 60;
+/**
+ * Per-task results kept on a card. Larger than the biggest shipped suite (90
+ * tasks) so the UI can always list every task; the cap only guards against a
+ * future suite that would bloat the store.
+ */
+const MAX_TASK_RESULTS = 150;
 
 /** Everything that can meaningfully get worse. */
 export const REGRESSION_THRESHOLDS = {
@@ -192,14 +196,29 @@ export class BenchmarkStore {
     const regressions = rows.filter((row) => row.regression);
     const improvements = rows.filter((row) => row.direction === 'better');
     const qualityRow = rows.find((row) => row.metric === 'quality')!;
-    const verdict: BenchmarkComparison['verdict'] =
-      regressions.length > 0 ? 'regressed' : improvements.length > 0 ? 'improved' : 'unchanged';
+    // Two runs of the same version are a repeat measurement, not an improvement:
+    // calling noise progress would make the promotion trail untrustworthy.
+    const sameVersion = candidate.versionId === baseline.versionId;
+    const verdict: BenchmarkComparison['verdict'] = sameVersion
+      ? regressions.length > 0
+        ? 'regressed'
+        : 'unchanged'
+      : regressions.length > 0
+        ? 'regressed'
+        : improvements.length > 0
+          ? 'improved'
+          : 'unchanged';
+    const faster = rows.filter((row) => row.metric.startsWith('latency') && row.direction === 'better').length;
     const summary =
-      verdict === 'regressed'
-        ? `${candidate.versionLabel} is worse than ${baseline.versionLabel}: ${regressions.map((row) => row.label).join(', ')}.`
-        : verdict === 'improved'
-          ? `${candidate.versionLabel} improves on ${baseline.versionLabel}: quality ${(qualityRow.delta * 100 >= 0 ? '+' : '')}${(qualityRow.delta * 100).toFixed(1)} points, ${improvements.length} metric(s) better.`
-          : `${candidate.versionLabel} is statistically indistinguishable from ${baseline.versionLabel}.`;
+      verdict === 'regressed' && sameVersion
+        ? `Repeat run of ${candidate.versionLabel} came out worse than the previous run: ${regressions.map((row) => row.label).join(', ')} — treat this result as unstable.`
+        : verdict === 'regressed'
+          ? `${candidate.versionLabel} is worse than ${baseline.versionLabel}: ${regressions.map((row) => row.label).join(', ')}.`
+          : verdict === 'improved'
+            ? `${candidate.versionLabel} improves on ${baseline.versionLabel}: quality ${(qualityRow.delta * 100 >= 0 ? '+' : '')}${(qualityRow.delta * 100).toFixed(1)} points, ${improvements.length} metric(s) better.`
+            : sameVersion
+              ? `Repeat run of ${candidate.versionLabel}: quality unchanged (${(qualityRow.delta * 100 >= 0 ? '+' : '')}${(qualityRow.delta * 100).toFixed(1)} points), ${faster} latency metric(s) better.`
+              : `${candidate.versionLabel} is statistically indistinguishable from ${baseline.versionLabel}.`;
 
     return { suiteId: candidate.suiteId, candidateId: candidate.id, baselineId: baseline.id, rows, verdict, summary };
   }

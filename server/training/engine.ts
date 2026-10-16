@@ -17,6 +17,7 @@ import { settingsStore } from '../settingsStore.js';
 import { versionStore } from '../models/versions.js';
 import { getSpecialist } from '../specialists/registry.js';
 import { benchmarkStore } from '../benchmarks/store.js';
+import { suiteForDataset } from '../benchmarks/suites.js';
 import { getDataset } from './datasets.js';
 import { getMethod, MethodRunResult } from './methods.js';
 import { checkpointsDir, runStore } from './runs.js';
@@ -230,6 +231,32 @@ export function startTraining(request: TrainingRunRequest, options: StartRunOpti
 }
 
 /**
+ * Runs a pre-training measurement when the specialist has no active version (or
+ * none for this suite yet). Failures are logged, never fatal: a missing baseline
+ * degrades the comparison, it must not break the training run.
+ */
+async function captureBaseline(run: TrainingRun, specialistId: string): Promise<void> {
+  const suite = suiteForDataset(run.datasetId);
+  if (!suite) return;
+  const active = versionStore.activeVersion(specialistId);
+  if (active && benchmarkStore.latestFor(suite, active.id)) return;
+  try {
+    const { runBenchmark } = await import('../benchmarks/runner.js');
+    emitTrainingEvent({
+      type: 'run.status',
+      runId: run.id,
+      status: 'running',
+      progress: 0.01,
+      message: `Measuring the current state on ${suite} before training`,
+    });
+    const card = await runBenchmark({ suiteId: suite, specialistId, repeats: 1 }, 'training');
+    logger.info('training', `Baseline ${card.id} for ${specialistId}: quality ${(card.quality * 100).toFixed(1)}%`);
+  } catch (e) {
+    logger.warn('training', `Could not measure a pre-training baseline for ${specialistId}`, { error: String(e) });
+  }
+}
+
+/**
  * Baseline for a candidate scorecard: the active version's latest card for the
  * same suite, or the untrained rule-policy baseline card when nothing is active.
  */
@@ -265,6 +292,12 @@ async function executeRun(runId: string, flags: { autoPromote?: boolean; runBenc
 
   runStore.update(runId, { status: 'running', startedAt: new Date().toISOString(), progress: 0.02 });
   emitTrainingEvent({ type: 'run.status', runId, status: 'running', progress: 0.02, message: `${method.name} started` });
+
+  // Objective before/after pair: measure the current (possibly untrained) state
+  // on the same suite the candidate will be measured on. Without this a first
+  // run has nothing to compare against, which is exactly the case where a
+  // promotion decision is easiest to get wrong.
+  if (flags.runBenchmarkAfter) await captureBaseline(run, specialist.id);
 
   let epochCounter = 0;
   // Methods that are not epoch-driven (index builds, induction passes) report a

@@ -54,7 +54,12 @@ export interface DelegationCalibration {
   curve: ThresholdPoint[];
 }
 
-export const DEFAULT_THRESHOLDS: number[] = Array.from({ length: 18 }, (_, index) => Number((0.1 + index * 0.05).toFixed(2)));
+/**
+ * Candidate thresholds. 0 is the "head always answers" endpoint and is included
+ * on purpose: for some datasets that really is the best setting, and the curve
+ * has to be able to say so.
+ */
+export const DEFAULT_THRESHOLDS: number[] = Array.from({ length: 20 }, (_, index) => Number((index * 0.05).toFixed(2)));
 
 interface ScoredExample {
   expected: string;

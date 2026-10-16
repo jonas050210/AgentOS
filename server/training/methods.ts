@@ -65,8 +65,8 @@ function bool(ctx: MethodRunContext, key: string, fallback: boolean): boolean {
 // ---------------------------------------------------------------------------
 
 const TASK_HEAD_HYPERPARAMETERS: HyperparameterSpec[] = [
-  { key: 'epochs', label: 'Epochs', type: 'int', default: 60, min: 1, max: 200, description: 'Passes over the training split. Early stopping ends the run sooner when validation loss stops improving.' },
-  { key: 'learningRate', label: 'Learning rate', type: 'float', default: 0.8, min: 0.001, max: 5, step: 0.01, description: 'Initial step size for mini-batch SGD; decays 15% per epoch.' },
+  { key: 'epochs', label: 'Epochs', type: 'int', default: 120, min: 1, max: 400, description: 'Passes over the training split. Early stopping ends the run sooner when validation loss stops improving.' },
+  { key: 'learningRate', label: 'Learning rate', type: 'float', default: 0.35, min: 0.001, max: 5, step: 0.01, description: 'Initial step size for mini-batch SGD; decays 15% per epoch.' },
   { key: 'l2', label: 'L2 regularisation', type: 'float', default: 0.0003, min: 0, max: 0.1, step: 0.0001, description: 'Weight decay that keeps the head from memorising the training split.', advanced: true },
   { key: 'batchSize', label: 'Batch size', type: 'int', default: 16, min: 1, max: 128, description: 'Examples per gradient update.', advanced: true },
   { key: 'momentum', label: 'Momentum', type: 'float', default: 0.9, min: 0, max: 0.99, step: 0.01, description: 'Smooths updates across batches.', advanced: true },

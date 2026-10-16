@@ -385,6 +385,7 @@ export type BenchmarkSuiteId =
   | 'coding.routing'
   | 'coding.expression'
   | 'research.extraction'
+  | 'research.routing'
   | 'research.retrieval'
   | 'knowledge.retrieval'
   | 'voice.normalization'

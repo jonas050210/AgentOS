@@ -238,9 +238,13 @@ export async function runBenchmark(
   }
 
   const level = await suiteLevelScore(suite, specialist.id, version?.id);
-  const taskAccuracy = suite.tasks.length > 0 ? repeatCorrectTotal(taskResults) / taskResults.length : 0;
+  // Correct answers over *all* repeats. Reading it from the stored per-task
+  // results would ignore every repeat after the first.
+  const attempts = suite.tasks.length * repeats;
+  const taskAccuracy = attempts > 0 ? correctCount / attempts : 0;
   const quality = level ? level.quality : Number(taskAccuracy.toFixed(4));
-  const cpuMs = Number(((process.cpuUsage(cpuBefore).user + process.cpuUsage(cpuBefore).system) / 1000).toFixed(3));
+  const cpu = process.cpuUsage(cpuBefore);
+  const cpuMs = Number(((cpu.user + cpu.system) / 1000).toFixed(3));
   const heapDeltaMb = Number(((process.memoryUsage().heapUsed - heapBefore) / 1024 / 1024).toFixed(3));
   const reliability = suite.tasks.length * repeats === 0 ? 1 : Number((1 - failures / (suite.tasks.length * repeats)).toFixed(4));
 
@@ -249,6 +253,7 @@ export async function runBenchmark(
     taskSuccessRate: Number((correctCount / (suite.tasks.length * repeats)).toFixed(4)),
     reliability,
     consistency: Number(taskAccuracy.toFixed(4)),
+    repeats,
     headAnswered: taskResults.filter((r) => r.source === 'head').length,
     policyAnswered: taskResults.filter((r) => r.source === 'policy').length,
     escalated: taskResults.filter((r) => r.source === 'escalated').length,
@@ -288,10 +293,6 @@ export async function runBenchmark(
     { triggeredBy },
   );
   return stored;
-}
-
-function repeatCorrectTotal(results: BenchmarkTaskResult[]): number {
-  return results.filter((result) => result.correct).length;
 }
 
 /** Short, truthful description of what answered during a benchmark. */

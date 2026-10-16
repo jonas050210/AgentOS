@@ -1,6 +1,7 @@
 import { BenchmarkSuiteId, BenchmarkSuiteInfo } from '../../shared/types.js';
 import {
   CODING_EXPRESSION_POOL,
+  RESEARCH_ROUTING_POOL,
   CODING_ROUTING_POOL,
   GENERAL_TOOL_POOL,
   KNOWLEDGE_QUERIES,
@@ -34,6 +35,7 @@ export interface BenchmarkSuite extends BenchmarkSuiteInfo {
 const codingRouting = splitPool(CODING_ROUTING_POOL, 3).evaluation;
 const codingExpressions = splitPool(CODING_EXPRESSION_POOL, 2).evaluation;
 const researchExtraction = splitPool(RESEARCH_EXTRACTION_POOL, 3).evaluation;
+const researchRouting = splitPool(RESEARCH_ROUTING_POOL, 3).evaluation;
 const generalTools = splitPool(GENERAL_TOOL_POOL, 3).evaluation;
 const voiceNormalization = splitPool(VOICE_NORMALIZATION_POOL, 3).evaluation;
 
@@ -87,6 +89,23 @@ export const BENCHMARK_SUITES: BenchmarkSuite[] = [
       input: item.text,
       expected: item.expected,
       kind: 'extraction',
+    })),
+  },
+  {
+    id: 'research.routing',
+    name: 'Research · decision routing',
+    specialistCategory: 'research',
+    description:
+      'Held-out research instructions: fetch a link, consult saved notes, or answer from knowledge. This is the decision the Research specialist learns — the rule planner solves only the smaller share of them.',
+    taskCount: researchRouting.length,
+    metrics: ['accuracy', 'macroF1', 'latencyMsP50', 'latencyMsP95', 'reliability'],
+    scorer: 'exact label match against the curated expectation',
+    provenance: 'Held-out split of the curated research routing pool (never trained on)',
+    tasks: researchRouting.map((item, index) => ({
+      id: `research.routing#${index + 1}`,
+      input: item.text,
+      expected: item.label,
+      kind: 'label',
     })),
   },
   {
@@ -175,4 +194,24 @@ export function assertSuiteForSpecialist(suite: BenchmarkSuite, category: string
 
 export function suiteInfos(): BenchmarkSuiteInfo[] {
   return BENCHMARK_SUITES.map(({ tasks: _tasks, ...info }) => info);
+}
+
+/**
+ * Which suite measures the model produced from a dataset. A training run uses
+ * this to measure the *state before* training on the very suite the candidate
+ * will be judged on, so the before/after pair is comparable by construction.
+ */
+export const DATASET_SUITE: Record<string, BenchmarkSuiteId> = {
+  'coding.tool_routing': 'coding.routing',
+  'coding.user_examples': 'coding.routing',
+  'research.tool_routing': 'research.routing',
+  'research.corpus': 'research.retrieval',
+  'knowledge.corpus': 'knowledge.retrieval',
+  'general.tool_routing': 'general.tool_selection',
+  'voice.lexicon': 'voice.normalization',
+  'voice.normalization': 'voice.normalization',
+};
+
+export function suiteForDataset(datasetId: string): BenchmarkSuiteId | null {
+  return DATASET_SUITE[datasetId] ?? null;
 }

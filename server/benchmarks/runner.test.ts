@@ -217,4 +217,21 @@ describe('benchmark runner', () => {
     expect(store.benchmarkStore.list({ suiteId: 'voice.normalization' }).length).toBe(cards.length);
     expect(store.benchmarkStore.get(cards[0].id)?.suiteId).toBe('voice.normalization');
   });
+
+  it('never calls a repeat run of the same version an improvement', async () => {
+    const first = await runner.runBenchmark({ specialistId: 'coding-ai', suiteId: 'coding.routing' });
+    const second = await runner.runBenchmark({ specialistId: 'coding-ai', suiteId: 'coding.routing' });
+    const comparison = store.benchmarkStore.compare(second, first);
+    // Same model, same suite: the verdict must not read as progress.
+    expect(comparison.verdict).not.toBe('improved');
+    expect(comparison.summary).toMatch(/repeat run/i);
+  });
+
+  it('returns a full per-task breakdown for a suite larger than the old cap', async () => {
+    const card = await runner.runBenchmark({ specialistId: 'coding-ai', suiteId: 'coding.routing' });
+    expect(card.tasksTotal).toBeGreaterThan(60);
+    expect(card.taskResults).toHaveLength(card.tasksTotal);
+    expect(card.taskResults.every((result) => result.source !== undefined)).toBe(true);
+    expect(card.taskResults.filter((result) => result.correct).length).toBe(card.tasksPassed);
+  });
 });
