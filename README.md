@@ -119,8 +119,9 @@ Measured on a fresh data directory (`npm run smoke`, and the probe runs in `docs
 
 | Suite | Untrained baseline | After training |
 | --- | --- | --- |
-| Coding · decision routing | 52.2% | 80.0% |
+| Coding · decision routing | 52.2% | 83.3% |
 | General · tool selection | 40.0% | 66.7% |
+| Research · decision routing | 50.0% | 81.3% |
 | Voice · speech normalisation | 15.4% | 92.3% |
 | Knowledge · note retrieval | 0.0% | 100.0% |
 

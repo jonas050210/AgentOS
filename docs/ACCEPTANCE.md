@@ -93,12 +93,16 @@ real backend on a temporary data directory.
 A probe script created five specialists' worth of data on a fresh `AGENTOS_DATA_DIR` and asserted the
 resulting files, not just HTTP status codes:
 
-- Training: coding-ai (120 epochs, holdout 78.9%, calibrated threshold 0.40, benchmark 81.1% →
+- Training: coding-ai (120 epochs, holdout 81.1%, calibrated threshold 0.40, benchmark 83.3% →
   promoted), general-ai (holdout 63.3%, benchmark 66.7% → promoted), research-ai (holdout 87.5%,
-  benchmark 100% → promoted), knowledge-ai (recall@5 1.0, benchmark 100% → promoted), voice-ai
+  benchmark 81.3% → promoted), knowledge-ai (recall@5 1.0, benchmark 100% → promoted), voice-ai
   (exact match 1.0, benchmark 92.3% → promoted).
-- Before/after pairs: coding 52.2% → 80.0/81.1%, general 40.0% → 66.7%, voice 15.4% → 92.3%,
-  knowledge 0.0% → 100.0%.
+- Before/after pairs, each measured on the *same* suite before and after training: coding
+  52.2% → 83.3%, general 40.0% → 66.7%, research 50.0% → 81.3%, voice 15.4% → 92.3%,
+  knowledge 0.0% → 100.0% (10 scorecards: 5 untrained baselines + 5 trained versions).
+- A candidate that does not beat its baseline is *not* promoted: research-ai's head measured
+  identically to the rule policy on the extraction suite, so the run was filed as a candidate and
+  the specialist's state said so instead of claiming an improvement.
 - Honesty: the failing run (`coding.user_examples` with a single label) reported
   *"Routing training needs at least two distinct decision labels."* and created **no** version.
 - Routing: `what is 128 * 4` → `calc.evaluate` at confidence 0.9473, answered by the trained head;
