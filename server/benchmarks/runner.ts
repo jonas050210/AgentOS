@@ -266,7 +266,9 @@ export async function runBenchmark(
     suiteName: suite.name,
     specialistId: specialist.id,
     specialistName: specialist.name,
-    versionId: version?.id ?? 'untrained',
+    // Baseline cards carry the `@untrained` suffix so every consumer can tell a
+    // rule-policy baseline apart from a trained version without extra flags.
+    versionId: version?.id ?? `${specialist.id}@untrained`,
     versionLabel: version?.label ?? 'untrained baseline',
     engine,
     quality,

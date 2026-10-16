@@ -40,8 +40,6 @@ export interface MethodRunResult {
 }
 
 export interface TrainingMethodDefinition extends TrainingMethodInfo {
-  /** Dataset kinds this method can consume. */
-  datasetKinds: DatasetPayload['info']['kind'][];
   run: (ctx: MethodRunContext) => Promise<MethodRunResult>;
 }
 
@@ -468,6 +466,11 @@ export function getMethod(id: TrainingMethodId): TrainingMethodDefinition | unde
   return TRAINING_METHODS.find((m) => m.id === id);
 }
 
+/**
+ * Serialisable description of every method, including which dataset kinds it can
+ * consume — the Training Lab pairs methods and datasets with that information
+ * instead of letting the backend reject a mismatched pair at submit time.
+ */
 export function methodInfos(): TrainingMethodInfo[] {
-  return TRAINING_METHODS.map(({ run: _run, datasetKinds: _kinds, ...info }) => info);
+  return TRAINING_METHODS.map(({ run: _run, ...info }) => info);
 }

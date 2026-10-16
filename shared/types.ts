@@ -247,6 +247,8 @@ export interface TrainingMethodInfo {
   artifactKind: string;
   requirements: string[];
   appliesTo: SpecialistCategory[];
+  /** Dataset kinds this method can consume; the UI uses this to pair them up. */
+  datasetKinds: DatasetInfo['kind'][];
   hyperparameters: HyperparameterSpec[];
   honesty: string;
 }

@@ -1,12 +1,24 @@
 import { vi } from 'vitest';
 import {
   activityFixture,
+  baselineScorecardFixture,
   capabilitiesFixture,
+  comparisonFixture,
+  datasetFixture,
+  externalMethodFixture,
   healthFixture,
   modelsFixture,
+  overviewFixture,
   providersFixture,
+  runFixture,
+  scorecardFixture,
   settingsFixture,
+  specialistFixture,
+  suiteFixture,
+  testResultFixture,
   toolsFixture,
+  trainingMethodFixture,
+  untrainedSpecialistFixture,
 } from './fixtures';
 
 export interface MockOptions {
@@ -65,6 +77,49 @@ export function mockApi(overrides: Partial<Record<string, unknown>> = {}, option
         },
       );
     }
+    // ---------- platform layer ----------
+    if (path.startsWith('/api/platform/overview')) return json(overviewFixture);
+    if (path.startsWith('/api/specialists/') && path.includes('/test') && method === 'POST') return json(testResultFixture);
+    if (path.startsWith('/api/specialists/') && path.includes('/normalize') && method === 'POST') {
+      return json({
+        text: 'The A P I responds in two hundred fifty milliseconds.',
+        engine: 'deterministic rules + learned lexicon (v1) · 28 entries',
+        versionId: 'voice-ai@v1',
+        lexiconEntries: 28,
+        applied: [{ from: 'API', to: 'A P I' }],
+      });
+    }
+    if (path.startsWith('/api/specialists/') && path.includes('/examples')) {
+      if (method === 'POST' || method === 'DELETE') return json({ id: 'ex_1', text: 'example', label: 'calc.evaluate', removed: true });
+      return json({
+        examples: [{ id: 'ex_1', specialistId: 'coding-ai', text: 'what is 2 + 2', label: 'calc.evaluate', createdAt: '2026-01-01T00:00:00.000Z', source: 'playground' }],
+      });
+    }
+    if (path.startsWith('/api/specialists/') && method === 'PATCH') return json(specialistFixture);
+    if (path.startsWith('/api/specialists/')) return json(specialistFixture);
+    if (path.startsWith('/api/specialists')) {
+      if (method === 'POST') return json({ ...specialistFixture, id: 'custom-ai', name: 'Custom AI', state: 'untrained', activeVersion: null, builtIn: false });
+      return json({ specialists: [specialistFixture, untrainedSpecialistFixture] });
+    }
+    if (path.startsWith('/api/training/methods')) return json({ methods: [trainingMethodFixture, externalMethodFixture] });
+    if (path.startsWith('/api/training/datasets')) return json({ datasets: [datasetFixture] });
+    if (path.startsWith('/api/training/runs') && method === 'POST') return json({ ...runFixture, id: 'run_new', status: 'queued', progress: 0, metrics: null, promotion: null });
+    if (path.startsWith('/api/training/runs/') && method === 'DELETE') return json({ removed: true });
+    if (path.startsWith('/api/training/runs/') && path.endsWith('/cancel')) return json({ cancelled: true });
+    if (path.startsWith('/api/training/runs/')) return json(runFixture);
+    if (path.startsWith('/api/training/runs')) return json({ runs: [runFixture] });
+    if (path.startsWith('/api/models/versions/') && path.endsWith('/promote')) return json({ version: specialistFixture.activeVersion, verification: { ok: true, message: 'No regression found.' } });
+    if (path.startsWith('/api/models/versions/') && path.endsWith('/reject')) return json({ version: { ...specialistFixture.activeVersion, status: 'rejected' } });
+    if (path.startsWith('/api/models/versions/') && method === 'DELETE') return json({ removed: true });
+    if (path.startsWith('/api/models/versions/')) {
+      return json({ summary: specialistFixture.activeVersion, artifact: { kind: 'task_head_sgd', labels: ['calc.evaluate'] }, scorecards: [scorecardFixture] });
+    }
+    if (path.startsWith('/api/models/versions')) return json({ versions: [specialistFixture.activeVersion], activeVersionIds: { 'coding-ai': 'coding-ai@v1' } });
+    if (path.startsWith('/api/benchmarks/suites')) return json({ suites: [suiteFixture] });
+    if (path.startsWith('/api/benchmarks/scorecards/')) return json({ ...scorecardFixture, taskResults: scorecardFixture.taskResults });
+    if (path.startsWith('/api/benchmarks/scorecards')) return json({ scorecards: [scorecardFixture, baselineScorecardFixture] });
+    if (path.startsWith('/api/benchmarks/compare')) return json(comparisonFixture);
+    if (path.startsWith('/api/benchmarks/run') && method === 'POST') return json(scorecardFixture);
     if (path.startsWith('/api/settings/reset')) return json(settingsFixture);
     if (path.startsWith('/api/settings')) return json(settingsFixture);
     if (path.startsWith('/api/activity')) return json(activityFixture);

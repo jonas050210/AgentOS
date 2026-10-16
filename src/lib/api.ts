@@ -2,13 +2,28 @@ import type {
   ActivityEntry,
   AgentChatRequest,
   AgentChatResponse,
+  BenchmarkComparison,
+  BenchmarkRunRequest,
+  BenchmarkScorecard,
+  BenchmarkSuiteInfo,
   CapabilityInfo,
+  CreateSpecialistRequest,
+  DatasetInfo,
   HealthStatus,
   ModelInfo,
+  ModelVersionSummary,
   ProviderInfo,
   Settings,
+  SpecialistPatch,
+  SpecialistSummary,
+  SpecialistTestRequest,
+  SpecialistTestResult,
+  SpeechNormalizationResult,
   ToolInfo,
   ToolExecutionResult,
+  TrainingMethodInfo,
+  TrainingRun,
+  TrainingRunRequest,
 } from '@shared/types';
 
 export class ApiError extends Error {
@@ -57,6 +72,27 @@ export interface SettingsResponse extends Settings {
   settingsPath: string;
 }
 
+export interface PlatformOverview {
+  specialists: SpecialistSummary[];
+  runs: TrainingRun[];
+  counts: { running: number; queued: number; completed: number; failed: number; cancelled: number; total: number };
+  scorecards: BenchmarkScorecard[];
+  versions: ModelVersionSummary[];
+  recentComparisons: Array<{
+    scorecardId: string;
+    specialistId: string;
+    suiteName: string;
+    verdict: 'improved' | 'regressed' | 'unchanged' | 'no_baseline';
+    quality: number;
+    createdAt: string;
+  }>;
+  methods: TrainingMethodInfo[];
+  datasets: DatasetInfo[];
+  suites: BenchmarkSuiteInfo[];
+  /** How many in-process training methods are usable right now. */
+  trainingAvailable: number;
+}
+
 export const api = {
   health: () => request<HealthStatus>('/health'),
   providers: () => request<ProviderInfo[]>('/providers'),
@@ -74,11 +110,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ input }),
     }),
-  chat: (payload: AgentChatRequest) =>
-    request<AgentChatResponse>('/chat', { method: 'POST', body: JSON.stringify(payload) }),
+  chat: (payload: AgentChatRequest) => request<AgentChatResponse>('/chat', { method: 'POST', body: JSON.stringify(payload) }),
   settings: () => request<SettingsResponse>('/settings'),
-  updateSettings: (patch: Partial<Settings>) =>
-    request<SettingsResponse>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  updateSettings: (patch: Partial<Settings>) => request<SettingsResponse>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   resetSettings: () => request<SettingsResponse>('/settings/reset', { method: 'POST' }),
   activity: (limit = 100) => request<{ entries: ActivityEntry[]; level: string }>(`/activity?limit=${limit}`),
   memory: (q?: string) =>
@@ -91,8 +125,87 @@ export const api = {
       settings: Settings['voice'];
     }>('/speech/engines'),
   deleteMemory: (id: string) => request<{ removed: boolean }>(`/memory/${id}`, { method: 'DELETE' }),
+
+  // ---------- platform: specialists ----------
+  overview: () => request<PlatformOverview>('/platform/overview'),
+  specialists: () => request<{ specialists: SpecialistSummary[] }>('/specialists'),
+  specialist: (id: string) => request<SpecialistSummary>(`/specialists/${encodeURIComponent(id)}`),
+  createSpecialist: (payload: CreateSpecialistRequest) =>
+    request<SpecialistSummary>('/specialists', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSpecialist: (id: string, patch: SpecialistPatch) =>
+    request<SpecialistSummary>(`/specialists/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteSpecialist: (id: string) => request<{ removed: boolean }>(`/specialists/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** Runs one input through a specialist and returns the full decision trace. */
+  testSpecialist: (id: string, payload: SpecialistTestRequest) =>
+    request<SpecialistTestResult>(`/specialists/${encodeURIComponent(id)}/test`, { method: 'POST', body: JSON.stringify(payload) }),
+  examples: (id: string) =>
+    request<{ examples: Array<{ id: string; text: string; label: string; createdAt: string; source: string }> }>(
+      `/specialists/${encodeURIComponent(id)}/examples`,
+    ),
+  addExample: (id: string, payload: { text: string; label: string }) =>
+    request<{ id: string; text: string; label: string }>(`/specialists/${encodeURIComponent(id)}/examples`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  removeExample: (id: string, exampleId: string) =>
+    request<{ removed: boolean }>(`/specialists/${encodeURIComponent(id)}/examples/${encodeURIComponent(exampleId)}`, { method: 'DELETE' }),
+  normalize: (id: string, text: string) =>
+    request<SpeechNormalizationResult>(`/specialists/${encodeURIComponent(id)}/normalize`, { method: 'POST', body: JSON.stringify({ text }) }),
+
+  // ---------- platform: training ----------
+  trainingMethods: () => request<{ methods: TrainingMethodInfo[] }>('/training/methods'),
+  datasets: () => request<{ datasets: DatasetInfo[] }>('/training/datasets'),
+  runs: (params: { specialistId?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.specialistId) query.set('specialistId', params.specialistId);
+    query.set('limit', String(params.limit ?? 20));
+    return request<{ runs: TrainingRun[] }>(`/training/runs?${query.toString()}`);
+  },
+  run: (id: string) => request<TrainingRun>(`/training/runs/${encodeURIComponent(id)}`),
+  startRun: (payload: TrainingRunRequest) => request<TrainingRun>('/training/runs', { method: 'POST', body: JSON.stringify(payload) }),
+  cancelRun: (id: string) => request<{ cancelled: boolean }>(`/training/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  deleteRun: (id: string) => request<{ removed: boolean }>(`/training/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ---------- platform: versions ----------
+  versions: (specialistId?: string) =>
+    request<{ versions: ModelVersionSummary[]; activeVersionIds: Record<string, string | null> }>(
+      `/models/versions${specialistId ? `?specialistId=${encodeURIComponent(specialistId)}` : ''}`,
+    ),
+  version: (id: string) =>
+    request<{ summary: ModelVersionSummary; artifact: Record<string, unknown> | null; scorecards: BenchmarkScorecard[] }>(
+      `/models/versions/${encodeURIComponent(id)}`,
+    ),
+  promoteVersion: (id: string, options: { verify?: boolean; force?: boolean } = {}) =>
+    request<{ version: ModelVersionSummary; verification: { ok: boolean; message: string } | null }>(
+      `/models/versions/${encodeURIComponent(id)}/promote`,
+      { method: 'POST', body: JSON.stringify(options) },
+    ),
+  rejectVersion: (id: string) =>
+    request<{ version: ModelVersionSummary }>(`/models/versions/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
+  deleteVersion: (id: string) => request<{ removed: boolean }>(`/models/versions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ---------- platform: benchmarks ----------
+  suites: () => request<{ suites: BenchmarkSuiteInfo[] }>('/benchmarks/suites'),
+  scorecards: (params: { specialistId?: string; suiteId?: string; versionId?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.specialistId) query.set('specialistId', params.specialistId);
+    if (params.suiteId) query.set('suiteId', params.suiteId);
+    if (params.versionId) query.set('versionId', params.versionId);
+    query.set('limit', String(params.limit ?? 25));
+    return request<{ scorecards: BenchmarkScorecard[] }>(`/benchmarks/scorecards?${query.toString()}`);
+  },
+  scorecard: (id: string) => request<BenchmarkScorecard>(`/benchmarks/scorecards/${encodeURIComponent(id)}`),
+  runBenchmark: (payload: BenchmarkRunRequest) => request<BenchmarkScorecard>('/benchmarks/run', { method: 'POST', body: JSON.stringify(payload) }),
+  compare: (candidateId: string, baselineId?: string) =>
+    request<BenchmarkComparison>(
+      `/benchmarks/compare?candidateId=${encodeURIComponent(candidateId)}${baselineId ? `&baselineId=${encodeURIComponent(baselineId)}` : ''}`,
+    ),
 };
 
 export function activityStreamUrl() {
   return '/api/activity/stream';
+}
+
+export function trainingStreamUrl() {
+  return '/api/training/stream';
 }

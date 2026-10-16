@@ -97,6 +97,7 @@
       transition-duration: 0.001ms !important;
     }
   }
+  /* Explicit "reduce motion" beats the OS preference; 'auto' is handled above. */
   [data-motion='off'] *,
   [data-motion='off'] *::before,
   [data-motion='off'] *::after {
