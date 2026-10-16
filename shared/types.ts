@@ -296,6 +296,8 @@ export interface DecidedPromotion {
   activeMetric: number | null;
   delta: number | null;
   metric: string;
+  /** Scorecard the candidate was measured against, when one existed. */
+  baselineId: string | null;
 }
 
 export interface TrainingRun {

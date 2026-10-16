@@ -17,7 +17,7 @@ import { settingsStore } from '../settingsStore.js';
 import { versionStore } from '../models/versions.js';
 import { getSpecialist } from '../specialists/registry.js';
 import { benchmarkStore } from '../benchmarks/store.js';
-import { suiteForDataset } from '../benchmarks/suites.js';
+import { getSuite, suiteForDataset } from '../benchmarks/suites.js';
 import { getDataset } from './datasets.js';
 import { getMethod, MethodRunResult } from './methods.js';
 import { checkpointsDir, runStore } from './runs.js';
@@ -53,6 +53,7 @@ export function decidePromotion(params: {
   scorecard?: { quality: number; suiteName: string; baselineQuality: number | null; baselineLabel: string | null; baselineId: string | null } | null;
 }): DecidedPromotion {
   const { specialistId, metrics, primaryMetric, autoPromote, minImprovement } = params;
+  const baselineId = params.scorecard?.baselineId ?? null;
   const candidate = metrics[primaryMetric];
   if (typeof candidate !== 'number' || Number.isNaN(candidate)) {
     return {
@@ -62,6 +63,7 @@ export function decidePromotion(params: {
       activeMetric: null,
       delta: null,
       metric: primaryMetric,
+      baselineId,
     };
   }
 
@@ -76,6 +78,7 @@ export function decidePromotion(params: {
         activeMetric: null,
         delta: null,
         metric: 'benchmarkQuality',
+        baselineId: null,
       };
     }
     const delta = quality - baselineQuality;
@@ -87,6 +90,7 @@ export function decidePromotion(params: {
         activeMetric: baselineQuality,
         delta,
         metric: 'benchmarkQuality',
+        baselineId,
       };
     }
     if (delta < 0) {
@@ -97,6 +101,7 @@ export function decidePromotion(params: {
         activeMetric: baselineQuality,
         delta,
         metric: 'benchmarkQuality',
+        baselineId,
       };
     }
     return {
@@ -106,6 +111,7 @@ export function decidePromotion(params: {
       activeMetric: baselineQuality,
       delta,
       metric: 'benchmarkQuality',
+      baselineId,
     };
   }
 
@@ -122,6 +128,7 @@ export function decidePromotion(params: {
       activeMetric,
       delta: null,
       metric: primaryMetric,
+      baselineId,
     };
   }
 
@@ -134,6 +141,7 @@ export function decidePromotion(params: {
       activeMetric,
       delta,
       metric: primaryMetric,
+      baselineId,
     };
   }
   if (delta < 0) {
@@ -144,6 +152,7 @@ export function decidePromotion(params: {
       activeMetric,
       delta,
       metric: primaryMetric,
+      baselineId,
     };
   }
   return {
@@ -153,6 +162,7 @@ export function decidePromotion(params: {
     activeMetric,
     delta,
     metric: primaryMetric,
+    baselineId,
   };
 }
 
@@ -232,11 +242,16 @@ export function startTraining(request: TrainingRunRequest, options: StartRunOpti
 
 /**
  * Runs a pre-training measurement when the specialist has no active version (or
- * none for this suite yet). Failures are logged, never fatal: a missing baseline
- * degrades the comparison, it must not break the training run.
+ * none for this suite yet). The suite is the specialist's primary suite — the
+ * same one `executeRun` benchmarks the candidate on — so the before/after pair
+ * is comparable by construction instead of being measured on two different task
+ * sets. Failures are logged, never fatal: a missing baseline degrades the
+ * comparison, it must not break the training run.
  */
 async function captureBaseline(run: TrainingRun, specialistId: string): Promise<void> {
-  const suite = suiteForDataset(run.datasetId);
+  const specialist = getSpecialist(specialistId);
+  const primary = specialist?.benchmarkSuiteIds[0] as BenchmarkSuiteId | undefined;
+  const suite = primary && getSuite(primary) ? primary : suiteForDataset(run.datasetId);
   if (!suite) return;
   const active = versionStore.activeVersion(specialistId);
   if (active && benchmarkStore.latestFor(suite, active.id)) return;

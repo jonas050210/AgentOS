@@ -50,7 +50,9 @@ const BUILT_IN: SpecialistDefinition[] = [
       'You are AgentOS Research AI. Structure answers as findings. Only report what the provided material contains and name the source you used.',
     params: { temperature: 0.3, maxTokens: 1100, topP: 0.9 },
     trainingMethodIds: ['retrieval_index', 'task_head_sgd', 'llm_adapter_finetune'],
-    benchmarkSuiteIds: ['research.extraction', 'research.retrieval'],
+    // Routing first: the head this specialist trains is a decision model, so it is
+    // measured on the suite that scores decisions, with extraction second.
+    benchmarkSuiteIds: ['research.routing', 'research.extraction', 'research.retrieval'],
     outputs: ['Source extraction', 'Retrieval over corpora', 'Condensed findings'],
     builtIn: true,
     createdAt: '2026-01-01T00:00:00.000Z',

@@ -274,6 +274,40 @@ describe('platform API · training', () => {
 });
 
 describe('platform API · models and benchmarks', () => {
+  it('measures the untrained baseline on the same suite the candidate is judged on', async () => {
+    // research-ai trains on a routing dataset but is benchmarked on its primary
+    // suite, so the two have to agree — otherwise the before/after pair is not
+    // comparable and the platform reports "no baseline" for an honest pair.
+    const started = await send('/api/training/runs', {
+      specialistId: 'research-ai',
+      methodId: 'task_head_sgd',
+      datasetId: 'research.tool_routing',
+      hyperparameters: { epochs: 20 },
+      autoPromote: false,
+      runBenchmarkAfter: true,
+    });
+    expect(started.status).toBe(202);
+    const run = await readJson<{ id: string }>(started);
+    const finished = await waitForRun(run.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.scorecardId).toBeTruthy();
+    expect(finished.promotion.baselineId).toBeTruthy();
+
+    const candidate = await readJson<{ suiteId: string }>(await get(`/api/benchmarks/scorecards/${finished.scorecardId}`));
+    const baseline = await readJson<{ suiteId: string; versionId: string; engine: string }>(
+      await get(`/api/benchmarks/scorecards/${finished.promotion.baselineId}`),
+    );
+    expect(baseline.suiteId).toBe(candidate.suiteId);
+    // The head is a decision model, so the decision suite is the primary measure.
+    expect(baseline.suiteId).toBe('research.routing');
+    expect(baseline.versionId).toBe('research-ai@untrained');
+    expect(baseline.engine).toMatch(/untrained baseline/);
+
+    // The specialist also declares the extraction suite, so it can be measured there.
+    const extraction = await send('/api/benchmarks/run', { specialistId: 'research-ai', suiteId: 'research.extraction' });
+    expect(extraction.status).toBe(200);
+  });
+
   it('keeps the better version and can reject a candidate without deleting evidence', async () => {
     const run = await readJson<{ id: string }>(
       await send('/api/training/runs', {

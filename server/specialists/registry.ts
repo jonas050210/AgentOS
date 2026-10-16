@@ -51,8 +51,14 @@ export function summarize(definition: SpecialistDefinition): SpecialistSummary {
     state = 'training';
     stateDetail = `${running.methodName} · ${Math.round(running.progress * 100)}% complete`;
   } else if (!activeVersion) {
+    // No active version, but a trained candidate may still exist: it was measured
+    // and did not clear the promotion gate. Saying "add a training run" then would
+    // be wrong, so the state names the candidate and why it is not live.
+    const candidate = versions.find((version) => version.status === 'candidate') ?? null;
     state = 'untrained';
-    stateDetail = `Untrained — ${definition.trainingMethodIds.length} compatible method(s); add a training run to give it a local head`;
+    stateDetail = candidate
+      ? `Untrained — ${candidate.label} was trained but did not clear the promotion gate; the current rule policy still scores at least as well. Review it under Training & versions.`
+      : `Untrained — ${definition.trainingMethodIds.length} compatible method(s); add a training run to give it a local head`;
   } else if (blockedTools.length > 0) {
     state = 'degraded';
     stateDetail = `${blockedTools.length} bound tool(s) blocked by permissions: ${blockedTools.join(', ')}`;
