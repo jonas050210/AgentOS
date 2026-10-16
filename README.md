@@ -144,8 +144,10 @@ python3 -m unittest discover -s tests -t .          # everything that can run he
 | `tests/test_utils.py` | text/file helpers, command timeouts and process control, credential redaction down to the log file, configuration validation |
 | `tests/test_ui.py` | the launcher CLI (`--version`, `--check`, `--doctor`, `--task`) and all seven views refreshing against a real application |
 
-The suite is deliberately lightweight: it needs no GPU, no model download and runs in about a
-minute on two cores. The GUI tests skip themselves when Qt cannot open a display.
+53 tests in total. The suite is deliberately lightweight: it needs no GPU, no model download and runs
+in about a minute on two cores. The GUI tests skip themselves when Qt cannot open a display. Current
+results on a 2-core development machine, including the bugs the suite found, are in
+[docs/CODEMIND_REPORT.md](docs/CODEMIND_REPORT.md).
 
 ## Layout
 
