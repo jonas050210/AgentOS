@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-base-950 text-slate-200 antialiased;
+    background-image:
+      radial-gradient(60rem 40rem at 15% -10%, rgba(76, 141, 255, 0.10), transparent 60%),
+      radial-gradient(50rem 35rem at 110% 10%, rgba(62, 207, 142, 0.06), transparent 55%);
+    background-attachment: fixed;
+  }
+  ::selection {
+    @apply bg-accent-500/30;
+  }
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent-500/70 ring-offset-1 ring-offset-base-950;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-base-700;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-base-600;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply rounded-xl border border-white/[0.06] bg-base-850/70 shadow-glass backdrop-blur-xl;
+  }
+  .glass-subtle {
+    @apply rounded-lg border border-white/[0.05] bg-white/[0.015];
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+  .btn-primary {
+    @apply btn bg-accent-500 text-white hover:bg-accent-400;
+  }
+  .btn-ghost {
+    @apply btn border border-white/[0.07] bg-white/[0.02] text-slate-300 hover:bg-white/[0.06];
+  }
+  .btn-danger {
+    @apply btn border border-signal-error/30 bg-signal-error/10 text-signal-error hover:bg-signal-error/20;
+  }
+  .input {
+    @apply w-full rounded-lg border border-white/[0.07] bg-base-900/80 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-accent-500/60;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wider text-slate-400;
+  }
+}
