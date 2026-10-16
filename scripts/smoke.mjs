@@ -111,6 +111,80 @@ try {
   const bad = await api('/api/chat', { method: 'POST', body: JSON.stringify({ message: '' }) });
   check('empty chat message is rejected with 400', bad.status === 400 && bad.body.code === 'VALIDATION_ERROR');
 
+  console.log('\nspecialists, training & benchmarks');
+  const overview = await api('/api/platform/overview');
+  const specialists = overview.body?.specialists ?? [];
+  check('specialists are registered with a state', specialists.length >= 5 && specialists.every((s) => typeof s.state === 'string'));
+  check('an untrained specialist is reported as untrained, not scored', specialists.every((s) => (s.activeVersion ? s.state !== 'untrained' : s.benchmarkScore === null)));
+  const methods = await api('/api/training/methods');
+  const adapter = methods.body?.methods?.find((m) => m.id === 'llm_adapter_finetune');
+  check('the external adapter method is listed as unavailable, not hidden', adapter && adapter.available === false && adapter.runtime === 'external');
+  const blocked = await api('/api/training/runs', {
+    method: 'POST',
+    body: JSON.stringify({ specialistId: 'coding-ai', methodId: 'llm_adapter_finetune', datasetId: 'coding.tool_routing' }),
+  });
+  check('POST /api/training/runs refuses an external method with 409', blocked.status === 409 && blocked.body.code === 'METHOD_UNAVAILABLE');
+  const mismatched = await api('/api/training/runs', {
+    method: 'POST',
+    body: JSON.stringify({ specialistId: 'coding-ai', methodId: 'retrieval_index', datasetId: 'coding.tool_routing' }),
+  });
+  check('a method that does not fit the specialist is refused', mismatched.status === 400 && mismatched.body.code === 'METHOD_NOT_APPLICABLE');
+
+  // Real training: a small head over real examples, benchmarked against the
+  // untrained baseline and only promoted if the measurement supports it.
+  const started = await api('/api/training/runs', {
+    method: 'POST',
+    body: JSON.stringify({
+      specialistId: 'coding-ai',
+      methodId: 'task_head_sgd',
+      datasetId: 'coding.tool_routing',
+      hyperparameters: { epochs: 12 },
+      runBenchmarkAfter: true,
+      autoPromote: true,
+    }),
+  });
+  check('a training run starts and returns an id', started.status === 202 && typeof started.body?.id === 'string');
+  let run = started.body;
+  const deadline = Date.now() + 90000;
+  while (run && ['queued', 'running'].includes(run.status) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 400));
+    run = (await api(`/api/training/runs/${started.body.id}`)).body;
+  }
+  check('the training run completes', run?.status === 'completed', run?.error ?? '');
+  check('the run records real training metrics', typeof run?.metrics?.holdoutAccuracy === 'number' && run.metrics.epochsRun > 0);
+  check('the run was benchmarked after training', typeof run?.metrics?.benchmarkQuality === 'number' && typeof run?.scorecardId === 'string');
+  check('promotion carries a reason', typeof run?.promotion?.action === 'string' && typeof run?.promotion?.reason === 'string');
+  const suffix = String(run?.versionId ?? '').split('@')[1];
+  const artifactPath = path.join(dataDir, 'models', 'coding-ai', `${suffix}.json`);
+  check('the trained artefact is written to disk', Boolean(suffix) && fs.existsSync(artifactPath));
+  const stored = fs.existsSync(artifactPath) ? JSON.parse(fs.readFileSync(artifactPath, 'utf-8')) : null;
+  check('the stored artefact contains learned weights, not seed values', Boolean(stored && Array.isArray(stored.weights) && stored.weights.length > 0 && stored.trainingSize > 0));
+
+  const versions = await api('/api/models/versions?specialistId=coding-ai');
+  const active = versions.body?.versions?.find((v) => v.status === 'active');
+  check('exactly one version is active per specialist', versions.body.versions.filter((v) => v.status === 'active').length === 1);
+  check('the active version carries training metrics', Boolean(active && Object.keys(active.metrics ?? {}).length > 0));
+
+  const scorecards = await api('/api/benchmarks/scorecards?limit=20');
+  const cards = scorecards.body?.scorecards ?? [];
+  const baseline = cards.find((c) => c.versionId.endsWith('@untrained'));
+  const measured = cards.find((c) => !c.versionId.endsWith('@untrained'));
+  check('benchmarks keep an untrained baseline card per suite', Boolean(baseline && baseline.quality >= 0));
+  check('a trained card is measured against that baseline', Boolean(measured && scorecards.body.comparisons[measured.id]?.baselineId));
+  check('scorecards record quality, reliability and latency', cards.every((c) => typeof c.quality === 'number' && typeof c.reliability === 'number' && typeof c.latencyMsP50 === 'number'));
+
+  const wrongSuite = await api('/api/benchmarks/run', { method: 'POST', body: JSON.stringify({ specialistId: 'coding-ai', suiteId: 'voice.normalization' }) });
+  check('a suite cannot be run against the wrong specialist category', wrongSuite.status === 400 && wrongSuite.body.code === 'SUITE_MISMATCH');
+
+  const normalize = await api('/api/specialists/voice-ai/normalize', { method: 'POST', body: JSON.stringify({ text: 'The build takes 42 sec and costs $15.' }) });
+  check(
+    'voice normalisation works before any training, and says so',
+    /deterministic rules/.test(normalize.body?.engine ?? '') && /forty-two/.test(normalize.body?.text ?? '') && /fifteen dollars/.test(normalize.body?.text ?? ''),
+  );
+
+  const untrained = await api('/api/specialists/research-ai/test', { method: 'POST', body: JSON.stringify({ input: 'read https://example.com/doc' }) });
+  check('an untrained specialist labels its engine instead of faking a model', /rule planner|no trained version/.test(untrained.body?.engine ?? ''));
+
   console.log('\npermissions & tool sandbox');
   const denied = await api('/api/tools/http.fetch/execute', { method: 'POST', body: JSON.stringify({ input: { url: 'https://example.com' } }) });
   check('network tool is denied while the permission is off', denied.body?.success === false && /Permission "network"/.test(denied.body.error));

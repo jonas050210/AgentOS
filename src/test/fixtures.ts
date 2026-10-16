@@ -21,7 +21,7 @@ export const platformDefaults = {
 export const healthFixture: HealthStatus = {
   status: 'degraded',
   uptimeSeconds: 12,
-  version: '0.1.0',
+  version: '0.2.0',
   timestamp: new Date('2026-01-01T00:00:00.000Z').toISOString(),
   components: [
     { id: 'orchestrator', name: 'Agent orchestrator', status: 'ok' },
