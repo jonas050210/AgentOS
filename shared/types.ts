@@ -490,6 +490,15 @@ export interface SpecialistTestResult {
   providerError: string | null;
   /** Who produced the final answer: the specialist itself, the offline engine, or an external provider. */
   answeredBy: 'local' | 'offline-engine' | 'provider';
+  /**
+   * The provider this request was escalated to (`builtin` for the offline engine).
+   * With `providerError` set it names the provider that failed, not an author.
+   */
+  providerId: string | null;
+  /** Human-readable provider name for the trace and the UI. */
+  providerName: string | null;
+  /** The model that produced the answer; `null` when no model produced it. */
+  model: string | null;
   toolCalls: Array<{ toolId: string; success: boolean; durationMs: number; summary: string }>;
   answer: string;
   latencyMs: number;

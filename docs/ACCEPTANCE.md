@@ -14,8 +14,8 @@ real backend on a temporary data directory.
 | 3 | Orchestration, model-management and capability interfaces implemented | ✅ | `server/orchestration/orchestrator.ts`, `server/providers/*`, `server/models/{catalog,versions}.ts`, `server/specialists/*`, `server/training/*`, `server/benchmarks/*`, `server/tools/*`, `server/speech/engines.ts` |
 | 4 | Status indicators reflect actual system states | ✅ | Health probes providers at request time; specialist state is computed from version/run/permission facts (`ready`/`training`/`degraded`/`untrained`/`disabled`); unreachable providers render `unreachable`/`unconfigured`; every reply names the mechanism that answered |
 | 5 | Settings persist across restarts | ✅ | Atomic write in `SettingsStore.update()`; `server/settingsStore.test.ts`, `server/routes/api.test.ts` (on-disk assertion + new store instance), smoke check reads `settings.json` |
-| 6 | Critical failure cases handled and tested | ✅ | Permission denial, path traversal, invalid tool input, unknown tool, provider outage, unreachable backend, corrupt settings file, malformed payloads, unknown specialist, empty dataset, incompatible method, external method, suite mismatch — each has a dedicated test |
-| 7 | Automated tests and build checks pass | ✅ | 126 tests passing across 16 files; `tsc` clean for client and server configs; `npm run build` clean; `npm run smoke` → **50/50 checks including a real training run** |
+| 6 | Critical failure cases handled and tested | ✅ | Permission denial, path traversal, invalid tool input, unknown tool, provider outage, provider that answers, provider that returns an empty completion, unreachable backend, corrupt settings file, malformed payloads, unknown specialist, empty dataset, incompatible method, external method, suite mismatch — each has a dedicated test |
+| 7 | Automated tests and build checks pass | ✅ | 143 tests passing across 16 files; `tsc` clean for client and server configs; `npm run build` clean; `npm run smoke` → **50/50 checks including a real training run** |
 | 8 | Documentation accurate about features, setup and limitations | ✅ | `README.md` (status table, training section, promotion gate, limitations, roadmap), `docs/ARCHITECTURE.md`, this file |
 
 ## B. Product & interface requirements
@@ -72,20 +72,21 @@ real backend on a temporary data directory.
 | --- | --- | --- |
 | `server/settingsStore.test.ts` | 6 | Persistence, corruption, validation, reset |
 | `server/tools/registry.test.ts` | 13 | Tool execution, permissions, sandboxing, failures |
-| `server/orchestration/orchestrator.test.ts` | 16 | Routing to specialists, tool planning, escalation, degradation, conversations |
-| `server/routes/api.test.ts` | 16 | HTTP surface, validation, secrets, persistence, outages |
-| `server/routes/platform.test.ts` | 14 | Specialist CRUD, test bench, examples, normalisation, training runs, versions, benchmarks, overview, comparison baselines |
+| `server/orchestration/orchestrator.test.ts` | 27 | Routing to specialists, tool planning, escalation, degradation, conversations, provider authorship/model reporting, memory grounding, empty-response handling |
+| `server/routes/api.test.ts` | 18 | HTTP surface, validation, secrets, persistence, provider outages and authorship reporting |
+| `server/routes/platform.test.ts` | 15 | Specialist CRUD, test bench, examples, normalisation, training runs, versions, benchmarks, overview, comparison baselines |
 | `server/training/corpora.test.ts` | 5 | Corpus generation, label pools, deterministic splits |
 | `server/ml/softmax.test.ts` | 5 | Real SGD: convergence, holdout generalisation, auto feature dimension, early stopping |
 | `server/ml/calibration.test.ts` | 5 | Threshold sweeps, tie-breaking, escalation behaviour |
 | `server/benchmarks/runner.test.ts` | 10 | Suite coverage, real measurement, regression detection, repeat runs, comparison semantics |
 | `src/App.test.tsx` | 4 | Shell, all-view navigation, workspace deep link, offline mode |
-| `src/views/SpecialistWorkspaceView.test.tsx` | 4 | Trained workspace, dataset facts, test bench, untrained honesty, unknown id |
+| `src/views/SpecialistWorkspaceView.test.tsx` | 6 | Trained workspace, dataset facts, test bench, provider authorship, untrained honesty, unknown id |
 | `src/views/TrainingLabView.test.tsx` | 5 | Method/dataset catalogue, POST payload, unavailable method, run list |
 | `src/views/BenchmarksView.test.tsx` | 7 | Scorecards + baseline chip, comparison/trade-off, running a suite, overview honesty |
+| `src/views/ChatView.test.tsx` | 9 | Routed replies + trace, structured errors, validation errors, provider-unreachable labelling |
 | `src/views/SettingsView.test.tsx` | 4 | Settings tabs, PUT payloads, secret masking, offline state |
 | `src/components/ui.test.tsx` | 4 | Design-system primitives |
-| **Total** | **126** | 16 files (`npx vitest run`) |
+| **Total** | **143** | 16 files (`npx vitest run`) |
 | `scripts/smoke.mjs` | 50 checks | Live boot + end-to-end API verification, including a real training run with artefact inspection |
 
 ## G. Live verification (real backend, temporary data directory)
@@ -131,3 +132,26 @@ workspace showed `Best measured quality 81.1% · rule baseline 52.2%`.
   user traffic.
 - Conversations are intentionally in-memory: chat-history persistence is out of scope for this
   milestone and listed in the README roadmap.
+
+## I. Post-merge reliability fix: accurate provider reporting
+
+The first full run after the v0.2.0 merge reported 123 passing / 4 failing tests in
+`server/orchestration/orchestrator.test.ts` (three of them 5 s vitest timeouts plus one wrong reply).
+Both causes were reproduced and fixed:
+
+| # | Root cause | Evidence | Fix |
+| --- | --- | --- | --- |
+| 1 | `runSpecialist` set `answeredBy: 'offline-engine'` for *every* successful escalation, so an answer from a real provider was reported as the degraded offline engine, and the orchestrator's trace claimed *"No external provider available"* while the LLM's text was in the reply | A stub Ollama server on `127.0.0.1:11434` answering `Hello! I'm AgentOS Concierge. How can I assist you today?` reproduced the reported failure exactly (`expected 'Hello! I'm AgentOS Concierge. How ca…' to match /offline engine/i`) on the unmodified merge commit | `escalate()` now returns the provider that answered (`providerId`, `providerName`, `model`); `answeredBy` is `offline-engine` only for the built-in engine and `provider` otherwise |
+| 2 | Every escalated turn probed provider availability twice (once to escalate, once purely for reporting). Against a port that accepts and never answers, each probe costs 1.5 s, so an idle turn cost ~3 s and two-turn tests exceeded the 5 s test timeout under load | Measured with a silent TCP listener: pre-fix 2 probes / 3010 ms per turn, post-fix 1 probe / 1507 ms | The orchestrator reports from the specialist result instead of probing again; the tests stub provider availability, so no suite depends on the machine's network (verified: the full suite passes, with 0 provider calls, while a live LLM listens on `127.0.0.1:11434`) |
+| 3 | The orchestrator derived `providerId`/`model` from settings rather than from the response, the offline engine was handed Ollama's model name, and an empty completion would have been stored as a blank reply | New regression tests assert `builtin` / `offline-reasoner` for the fallback, `ollama` / `llama3.2` for a provider, and a graceful failure for an empty completion | Model name is passed only to the provider that is called; empty completions raise a provider error; `escalationReason` reports a failed tool instead of `null` |
+| 4 | `summarizeToolOutput` read `records[].content` from `memory.search`, which answers with `results[].snippet`: every successful note lookup was answered with *"No stored note matched."* while the trace reported the tool as executed. `toolInputFor('memory.write')` also sent `content` where the tool requires `body`, so that branch could never pass validation | Live turn `what did we save about the release train?` answered "No stored note matched." with a `tool:memory.search` step in the trace; both mismatches are covered by new tests | The summarizer reads the tool's real output shape (and the legacy one), names where a `memory.write` note was stored, and the planner builds the schema the `memory.write` tool declares |
+
+Test isolation: `server/test-suite.setup.ts` gives every run a throwaway `AGENTOS_DATA_DIR`, so the
+import-time stores never read or write the working tree's `data/` directory (verified by running the full
+suite with a hostile `data/settings.json` and `data/memory.json` present — 141/141 passed and the files
+were left untouched).
+
+Contract now asserted by tests (server and HTTP layer): `answeredBy: 'provider'` ⟺
+`degraded: false` and a trace step naming that provider; `answeredBy: 'offline-engine'` ⟺
+`providerId: 'builtin'`, `degraded: true` and a warning trace step; a failed provider ⟹
+`providerError` set, `model: null`, error trace steps and no authorship claim.

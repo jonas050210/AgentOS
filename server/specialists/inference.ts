@@ -56,6 +56,12 @@ export interface RunOptions {
   skipEscalation?: boolean;
   /** Where the call came from — chat, the playground, a test or a measurement. */
   mode?: 'chat' | 'playground' | 'test' | 'benchmark';
+  /**
+   * Grounding blocks the caller has already assembled (memory recall, retrieved
+   * passages). They are handed to an escalated provider so the answer is built on
+   * the same context the trace claims was used.
+   */
+  context?: string[];
 }
 
 export interface DecideOptions {
@@ -288,7 +294,8 @@ export function toolInputFor(toolId: string, input: string): Record<string, unkn
     case 'memory.save':
       return { title: `Note from ${new Date().toISOString().slice(0, 10)}: ${input.slice(0, 48)}`, content: input };
     case 'memory.write':
-      return { title: input.slice(0, 60), content: input };
+      // The tool's schema is `title` + `body` (it writes a note file).
+      return { title: input.slice(0, 60), body: input };
     case 'http.fetch':
       return { url: urlMatch?.[0] ?? '' };
     case 'system.info':
@@ -326,14 +333,29 @@ function summarizeToolOutput(toolId: string, output: unknown, input: Record<stri
       .join('\n');
   }
   if (toolId === 'memory.search') {
-    const records = (output as { records?: Array<{ title: string; content: string }> }).records ?? [];
+    // `memory.search` answers with `results[].snippet`; `records[].content` is the
+    // shape older callers used. Both are read so a renamed field can never make a
+    // successful lookup look like "no match".
+    const payload = output as {
+      results?: Array<{ title?: string; snippet?: string; content?: string }>;
+      records?: Array<{ title?: string; content?: string }>;
+    };
+    const records: Array<{ title?: string; snippet?: string; content?: string }> = payload.results ?? payload.records ?? [];
     return records.length
-      ? records.map((record, index) => `${index + 1}. ${record.title}\n   ${record.content.slice(0, 200)}`).join('\n')
+      ? records
+          .map((record, index) => `${index + 1}. ${record.title ?? 'Untitled'}\n   ${(record.snippet ?? record.content ?? '').slice(0, 200)}`)
+          .join('\n')
       : 'No stored note matched.';
   }
-  if (toolId === 'memory.save' || toolId === 'memory.write') {
+  if (toolId === 'memory.save') {
     const id = (output as { id?: string }).id;
     return id ? `Saved to memory as ${id}.` : 'Saved to memory.';
+  }
+  if (toolId === 'memory.write') {
+    // This tool writes a note file into the data directory; it does not add a
+    // record to the memory store, and the reply says so.
+    const path = (output as { path?: string }).path;
+    return path ? `Wrote the note to ${path} in the AgentOS data directory.` : 'Wrote the note to the AgentOS data directory.';
   }
   if (toolId === 'http.fetch') {
     const body = String((output as { body?: string }).body ?? '');
@@ -389,26 +411,41 @@ async function escalate(
   input: string,
   reason: string,
   context: string,
-): Promise<{ answer: string; error: string | null; trace: AgentTraceStep }> {
+): Promise<{ answer: string; error: string | null; trace: AgentTraceStep; providerId: string; providerName: string; model: string | null }> {
   const specialist = getSpecialist(specialistId);
   const settings = settingsStore.get();
   const provider = await providerRegistry.preferred();
+  // Only the provider that is actually about to be called gets its configured
+  // model name: the offline engine must report its own model, never Ollama's.
+  const requestedModel =
+    provider.id === 'openai'
+      ? settings.providers.openai.model
+      : provider.id === 'ollama'
+        ? settings.providers.ollama.model
+        : undefined;
   try {
     const result = await provider.generate({
-      model: provider.id === 'openai' ? settings.providers.openai.model : settings.providers.ollama.model,
+      model: requestedModel,
       prompt: input,
       system: [specialist?.systemPrompt ?? 'You are AgentOS.', context].filter(Boolean).join('\n\n'),
       temperature: specialist?.params.temperature ?? 0.5,
       maxTokens: specialist?.params.maxTokens ?? 700,
     });
+    const text = result.text?.trim() ?? '';
+    // An empty completion is a provider failure, not an answer: reporting it as
+    // the assistant's reply would leave the user with a blank turn and no reason.
+    if (!text) throw new Error(`${provider.info().name} returned an empty response`);
     return {
-      answer: result.text,
+      answer: text,
       error: null,
       trace: {
         step: 'escalate',
         detail: `${provider.info().name} answered (${provider.id === 'builtin' ? 'offline engine' : 'external provider'}) — ${reason}`,
         status: 'ok',
       },
+      providerId: provider.id,
+      providerName: provider.info().name,
+      model: result.model,
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -417,6 +454,9 @@ async function escalate(
       answer: `The specialist could not complete this request: ${message}\n\nRetry, or configure a model provider in Settings → Model providers.`,
       error: message,
       trace: { step: 'escalate', detail: `Provider failure: ${message}`, status: 'error' },
+      providerId: provider.id,
+      providerName: provider.info().name,
+      model: null,
     };
   }
 }
@@ -447,6 +487,16 @@ export async function runSpecialist(
   let providerError: string | null = null;
   let escalated = decision.escalated;
   let answeredBy: SpecialistTestResult['answeredBy'] = 'local';
+  /** Provider that actually produced the answer, plus its model — null on the local paths. */
+  let providerId: string | null = null;
+  let providerName: string | null = null;
+  let model: string | null = null;
+  /**
+   * Why the request left the local path. Kept in a variable (instead of reading
+   * `decision.reason` later) so a *failed tool* on an otherwise-confident
+   * decision is reported with its real cause.
+   */
+  let escalationReason: string | null = null;
 
   if (!escalated && decision.label) {
     if (decision.retrieval.length > 0 && decision.label !== 'normalize') {
@@ -493,6 +543,7 @@ export async function runSpecialist(
         // A tool the model chose but cannot run is a real failure: escalate
         // rather than returning a half-truth.
         escalated = true;
+        escalationReason = `The planned tool ${decision.label} failed: ${call.error ?? 'unknown error'}`;
         trace.push({ step: `tool:${decision.label}`, detail: call.error ?? 'Tool failed', status: 'warn', durationMs: call.durationMs });
       }
     }
@@ -502,17 +553,30 @@ export async function runSpecialist(
     const retrievalContext = decision.retrieval.length
       ? `Relevant notes:\n${decision.retrieval.map((hit) => `- ${hit.title}`).join('\n')}`
       : '';
-    const reason = decision.reason ?? 'The specialist could not resolve this locally.';
+    // Caller-supplied grounding (memory recall, …) plus anything the local
+    // retrieval produced — whatever the trace reported is what the provider sees.
+    const grounding = [...(options.context ?? []), retrievalContext].filter((block) => block.trim().length > 0).join('\n\n');
+    const reason = decision.reason ?? escalationReason ?? 'The specialist could not resolve this locally.';
+    escalationReason = reason;
     if (options.offline || options.skipEscalation) {
       providerError = options.offline ? 'model provider disabled for this measurement' : null;
       answer = `No local answer available (${reason})`;
       trace.push({ step: 'escalate', detail: `Escalation skipped: ${reason}`, status: 'skipped' });
     } else {
-      const result = await escalate(specialistId, input, reason, retrievalContext);
+      const result = await escalate(specialistId, input, reason, grounding);
       answer = result.answer;
       providerError = result.error;
       trace.push(result.trace);
-      answeredBy = result.error ? 'local' : 'offline-engine';
+      providerId = result.providerId;
+      providerName = result.providerName;
+      model = result.model;
+      // Who answered is a fact, not a guess: only the built-in engine is the
+      // degraded offline fallback, every other provider is reported as such.
+      answeredBy = result.error
+        ? 'local'
+        : result.providerId === 'builtin'
+          ? 'offline-engine'
+          : 'provider';
     }
   }
 
@@ -534,9 +598,12 @@ export async function runSpecialist(
     confidence: decision.confidence,
     probabilities: decision.probabilities,
     escalated,
-    escalationReason: escalated ? decision.reason : null,
+    escalationReason: escalated ? escalationReason : null,
     providerError,
     answeredBy,
+    providerId,
+    providerName,
+    model,
     toolCalls,
     answer,
     latencyMs: Number((performance.now() - started).toFixed(2)),

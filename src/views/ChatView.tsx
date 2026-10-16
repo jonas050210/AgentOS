@@ -14,6 +14,7 @@ interface ChatMessage {
   providerId?: string;
   model?: string;
   degraded?: boolean;
+  providerError?: string | null;
   trace?: AgentTraceStep[];
 }
 
@@ -86,6 +87,7 @@ export function ChatView() {
           providerId: meta?.providerId as string | undefined,
           model: meta?.model as string | undefined,
           degraded: Boolean(meta?.degraded),
+          providerError: (meta?.providerError as string | null | undefined) ?? null,
           trace: response.trace,
         },
       ]);
@@ -290,10 +292,16 @@ function MessageBubble({
         {!isUser && !isSystem && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/[0.05] pt-2 text-[11px] text-slate-500">
             {message.capabilityId && <span>{message.capabilityId}</span>}
-            {message.model && (
-              <Badge tone={message.degraded ? 'warn' : 'ok'}>
-                {message.degraded ? 'offline engine' : 'model'}: {message.model}
+            {message.providerError ? (
+              <Badge tone="error" title={message.providerError}>
+                provider unreachable
               </Badge>
+            ) : (
+              message.model && (
+                <Badge tone={message.degraded ? 'warn' : 'ok'}>
+                  {message.degraded ? 'offline engine' : 'model'}: {message.model}
+                </Badge>
+              )
             )}
             <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
             <button type="button" className="rounded px-1.5 py-0.5 hover:bg-white/10" onClick={onSpeak} disabled={!canSpeak} title={canSpeak ? 'Read aloud' : 'Speech synthesis unavailable'}>

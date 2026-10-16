@@ -163,7 +163,13 @@ function Bench({ specialist, onChanged }: { specialist: SpecialistSummary; onCha
               <StatTile
                 label="Latency"
                 value={`${result.latencyMs.toFixed(1)} ms`}
-                hint={`answered by ${result.answeredBy}`}
+                hint={
+                  result.providerError
+                    ? `provider unreachable — ${result.providerError}`
+                    : result.providerName
+                      ? `answered by ${result.providerName}${result.model ? ` (${result.model})` : ''}`
+                      : 'answered by the local path'
+                }
               />
             </div>
 
